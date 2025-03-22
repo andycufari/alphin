@@ -9,7 +9,6 @@ contract AlfinToken is ERC20Votes, Ownable {
     mapping(address => bool) public hasJoined;
 
     constructor() ERC20("AlphinDAO Token", "ALF") ERC20Permit("AlfinDAO Token") {
-        _mint(msg.sender, INITIAL_SUPPLY); // Admin recibe todos los tokens al inicio
     }
 
     function joinDAO() external {
