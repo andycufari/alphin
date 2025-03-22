@@ -1,5 +1,6 @@
 # Environment variables
 .env
+.env.example
 
 # Dependency directories
 node_modules/
@@ -37,3 +38,6 @@ pids/
 ehthumbs.db
 Thumbs.db
 lib/openzeppelin-contracts
+oz-tree.txt
+package-lock.json
+.env.example
