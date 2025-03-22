@@ -10,6 +10,7 @@ const WalletManager = require('./modules/wallets/walletManager');
 const CommandHandler = require('./modules/commands/commandHandler');
 const TextProcessor = require('./modules/text/textProcessor');
 const GamificationService = require('./modules/gamification/gamificationService');
+const helpers = require('./utils/helpers');
 
 // Initialize the bot
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
@@ -30,6 +31,13 @@ db.serialize(() => {
     last_updated INTEGER NOT NULL
   )`);
 });
+
+// Ensure wallet directory exists
+const walletDir = process.env.WALLET_DIRECTORY || './wallets';
+if (!fs.existsSync(walletDir)) {
+  fs.mkdirSync(walletDir, { recursive: true });
+  console.log(`Created wallet directory at ${walletDir}`);
+}
 
 // Initialize services
 const aiService = new AIService(process.env.OPENAI_API_KEY);
@@ -61,7 +69,7 @@ bot.on('message', (msg) => {
   
   // Handle group mentions
   if (msg.chat.type !== 'private' && msg.text && (
-    msg.text.includes('@AlfinalDAOBot') || 
+    msg.text.includes('@AlfinDAOBot') || 
     (msg.reply_to_message && msg.reply_to_message.from.username === 'AlfinDAOBot')
   )) {
     textProcessor.processGroupMention(msg, bot);
@@ -74,8 +82,21 @@ bot.on('message', (msg) => {
   }
 });
 
-// Log startup
-console.log('Alfin DAO Bot is running...');
+// Handle deep links (for vote redirections)
+bot.onText(/\/start vote_(.+)_(.+)/, (msg, match) => {
+  const proposalId = match[1];
+  const voteType = match[2];
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+  
+  if (msg.chat.type === 'private') {
+    commandHandler.handleVoteAction(chatId, userId, proposalId, voteType);
+  }
+});
+
+// Log startup with version info
+console.log(`Alfin DAO Bot v${process.env.npm_package_version || '1.0.0'} is running...`);
+console.log(`Connected to blockchain network: ${process.env.BLOCKCHAIN_NETWORK || 'Unknown'}`);
 
 // Handle graceful shutdown
 process.on('SIGINT', () => {
