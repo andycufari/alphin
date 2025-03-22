@@ -154,6 +154,59 @@ class ProposalMonitor {
   }
   
   /**
+   * Format text safely for Telegram markdown
+   * @param {string} text - The text to format
+   * @returns {string} - Safely formatted text
+   */
+  safeMarkdown(text) {
+    if (!text) return '';
+    
+    // Escape characters that have special meaning in Markdown
+    return String(text)
+      .replace(/\_/g, '\\_')  // Escape underscores
+      .replace(/\*/g, '\\*')  // Escape asterisks
+      .replace(/\[/g, '\\[')  // Escape square brackets
+      .replace(/\]/g, '\\]')
+      .replace(/\(/g, '\\(')  // Escape parentheses
+      .replace(/\)/g, '\\)')
+      .replace(/\~/g, '\\~')  // Escape tildes
+      .replace(/\`/g, '\\`')  // Escape backticks
+      .replace(/\>/g, '\\>')  // Escape greater than
+      .replace(/\#/g, '\\#')  // Escape hash
+      .replace(/\+/g, '\\+')  // Escape plus
+      .replace(/\-/g, '\\-')  // Escape minus
+      .replace(/\=/g, '\\=')  // Escape equals
+      .replace(/\|/g, '\\|')  // Escape pipe
+      .replace(/\{/g, '\\{')  // Escape curly braces
+      .replace(/\}/g, '\\}')
+      .replace(/\./g, '\\.')  // Escape dots
+      .replace(/\!/g, '\\!'); // Escape exclamation
+  }
+  
+  /**
+   * Safe wrapper to create markdown text with proper escaping
+   * @param {string} text - Text to format
+   * @param {string} format - Markdown format (bold, italic, code, etc.)
+   * @returns {string} - Safely formatted markdown
+   */
+  formatMarkdown(text, format) {
+    const safeText = this.safeMarkdown(text);
+    
+    switch (format) {
+      case 'bold':
+        return `*${safeText}*`;
+      case 'italic':
+        return `_${safeText}_`;
+      case 'code':
+        return `\`${safeText}\``;
+      case 'pre':
+        return `\`\`\`${safeText}\`\`\``;
+      default:
+        return safeText;
+    }
+  }
+  
+  /**
    * Notify community about a proposal state change
    * @param {Object} proposal - Current proposal data
    * @param {string} oldState - Previous proposal state
@@ -168,6 +221,7 @@ class ProposalMonitor {
       const proposalId = proposal.id;
       const shortId = proposalId.substring(0, 8);
       const title = proposal.title || `Proposal #${shortId}`;
+      const safeTitle = this.safeMarkdown(title);
       
       let message, emoji;
       
@@ -175,29 +229,29 @@ class ProposalMonitor {
       switch (proposal.state) {
         case 'Succeeded':
           emoji = '✅';
-          message = `*Proposal Approved!*\n\n*${title}* (ID: \`${shortId}\`) has passed!\n\n*Final Votes:*\n✅ For: ${proposal.votes.forVotes}\n❌ Against: ${proposal.votes.againstVotes}\n⚪ Abstain: ${proposal.votes.abstainVotes}\n\nThe proposal is now ready to be executed by a DAO admin.`;
+          message = `*Proposal Approved!*\n\n*${safeTitle}* (ID: ${shortId}) has passed!\n\n*Final Votes:*\n✅ For: ${proposal.votes.forVotes}\n❌ Against: ${proposal.votes.againstVotes}\n⚪ Abstain: ${proposal.votes.abstainVotes}\n\nThe proposal is now ready to be executed by a DAO admin.`;
           break;
           
         case 'Defeated':
           emoji = '❌';
-          message = `*Proposal Rejected*\n\n*${title}* (ID: \`${shortId}\`) did not receive enough votes to pass.\n\n*Final Votes:*\n✅ For: ${proposal.votes.forVotes}\n❌ Against: ${proposal.votes.againstVotes}\n⚪ Abstain: ${proposal.votes.abstainVotes}`;
+          message = `*Proposal Rejected*\n\n*${safeTitle}* (ID: ${shortId}) did not receive enough votes to pass.\n\n*Final Votes:*\n✅ For: ${proposal.votes.forVotes}\n❌ Against: ${proposal.votes.againstVotes}\n⚪ Abstain: ${proposal.votes.abstainVotes}`;
           break;
           
         case 'Executed':
           emoji = '🚀';
-          message = `*Proposal Executed*\n\n*${title}* (ID: \`${shortId}\`) has been executed and its changes are now in effect!\n\nThank you to all members who participated in this governance decision.`;
+          message = `*Proposal Executed*\n\n*${safeTitle}* (ID: ${shortId}) has been executed and its changes are now in effect!\n\nThank you to all members who participated in this governance decision.`;
           break;
           
         case 'Expired':
           emoji = '⏱️';
-          message = `*Proposal Expired*\n\n*${title}* (ID: \`${shortId}\`) has expired without being executed.\n\n*Final Votes:*\n✅ For: ${proposal.votes.forVotes}\n❌ Against: ${proposal.votes.againstVotes}\n⚪ Abstain: ${proposal.votes.abstainVotes}`;
+          message = `*Proposal Expired*\n\n*${safeTitle}* (ID: ${shortId}) has expired without being executed.\n\n*Final Votes:*\n✅ For: ${proposal.votes.forVotes}\n❌ Against: ${proposal.votes.againstVotes}\n⚪ Abstain: ${proposal.votes.abstainVotes}`;
           break;
           
         case 'Active':
           // Only notify for new proposals becoming active
           if (!oldState) {
             emoji = '🗳️';
-            message = `*New Proposal Available for Voting*\n\n*${title}* (ID: \`${shortId}\`) is now open for voting!\n\nUse @AlphinDAO_bot to cast your vote.`;
+            message = `*New Proposal Available for Voting*\n\n*${safeTitle}* (ID: ${shortId}) is now open for voting!\n\nUse @AlphinDAO_bot to cast your vote.`;
           }
           break;
           
@@ -208,13 +262,24 @@ class ProposalMonitor {
       
       // Send notification to community group
       if (message) {
-        await this.bot.sendMessage(
-          this.communityGroupId,
-          `${emoji} ${message}`,
-          { parse_mode: 'Markdown' }
-        );
-        
-        console.log(`Notified community about proposal ${proposalId} state change: ${oldState} -> ${proposal.state}`);
+        try {
+          await this.bot.sendMessage(
+            this.communityGroupId,
+            `${emoji} ${message}`,
+            { parse_mode: 'Markdown' }
+          );
+          
+          console.log(`Notified community about proposal ${proposalId} state change: ${oldState} -> ${proposal.state}`);
+        } catch (formatError) {
+          // If markdown formatting fails, try sending without formatting
+          console.warn('Markdown formatting error, retrying without markdown:', formatError.message);
+          await this.bot.sendMessage(
+            this.communityGroupId,
+            `${emoji} ${message.replace(/[\*\`\_\[\]]/g, '')}`,
+            { parse_mode: null }
+          );
+          console.log(`Notified community about proposal ${proposalId} state change (without markdown)`);
+        }
       }
     } catch (error) {
       console.error(`Error notifying about proposal state change:`, error);

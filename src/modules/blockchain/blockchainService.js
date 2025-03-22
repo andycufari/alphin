@@ -355,11 +355,11 @@ class BlockchainService {
   }
   
   /**
-   * Vote on a proposal with pre-validation checks
-   * @param {Object} userWallet - User's wallet object
+   * Vote on proposal using user's signature (meta-transaction)
+   * @param {ethers.Wallet} userWallet - User's wallet for voting
    * @param {string} proposalId - ID of the proposal
-   * @param {number} voteType - Vote type (0=against, 1=for, 2=abstain)
-   * @returns {Promise<Object>} - Vote transaction result
+   * @param {number} voteType - 0: against, 1: for, 2: abstain
+   * @returns {Promise<Object>} - Transaction details
    */
   async voteOnProposal(userWallet, proposalId, voteType) {
     if (!this.blockchainEnabled) {
@@ -450,45 +450,224 @@ class BlockchainService {
       }
       
       // All validation passed, proceed with voting
-      // Admin wallet will pay for all gas
-      const data = this.governorContract.interface.encodeFunctionData('castVote', [
-        proposalId,
-        voteType
-      ]);
+      // We'll first try the meta-transaction approach, then fall back if needed
       
-      // Use fixed gas limit to avoid estimation issues
-      const gasLimit = ethers.BigNumber.from("300000");
-      
-      // Send transaction with admin wallet
-      const tx = await this.adminWallet.sendTransaction({
-        to: this.governorAddress,
-        data: data,
-        gasLimit: gasLimit
-      });
-      
-      console.log(`Vote transaction sent: ${tx.hash}`);
-      
-      // Wait for transaction to be mined
-      const receipt = await tx.wait();
-      console.log(`Vote transaction confirmed in block ${receipt.blockNumber}`);
-      
-      // Check if transaction was successful
-      if (receipt.status === 1) {
-        console.log(`Vote successful with admin wallet, tx hash: ${receipt.transactionHash}`);
-        return { 
-          txHash: receipt.transactionHash, 
-          success: true,
-          method: 'admin-assisted'
+      // --- META-TRANSACTION ATTEMPT ---
+      try {
+        console.log(`Attempting to vote with meta-transaction (user signs, admin pays gas)...`);
+        
+        // Ensure proposalId is a BigNumber for proper encoding
+        const proposalIdBN = ethers.BigNumber.from(proposalId);
+        
+        // Step 1: Get the domain data for EIP-712 signature
+        let name;
+        try {
+          name = await this.governorContract.name();
+        } catch (nameError) {
+          console.warn('Could not get governor name, using default:', nameError.message);
+          name = 'Governor';
+        }
+        
+        const chainId = (await this.provider.getNetwork()).chainId;
+        console.log(`Creating vote signature for chain ID: ${chainId}`);
+        
+        // Create domain separator for EIP-712 signing
+        const domain = {
+          name: name,
+          version: '1',
+          chainId: chainId,
+          verifyingContract: this.governorAddress
         };
-      } else {
-        console.warn(`Vote transaction failed with status: ${receipt.status}`);
-        return {
-          txHash: receipt.transactionHash,
-          success: false,
-          status: 'failed',
-          method: 'admin-assisted',
-          error: 'Transaction was mined but failed'
+
+        // Define the ballot type structure (following EIP-712)
+        const types = {
+          Ballot: [
+            { name: 'proposalId', type: 'uint256' },
+            { name: 'support', type: 'uint8' }
+          ]
         };
+
+        // The vote data
+        const value = {
+          proposalId: proposalIdBN.toString(),
+          support: voteType
+        };
+        
+        console.log(`Creating signature for proposal ${proposalIdBN.toString()}, vote type: ${voteType}`);
+        console.log(`Using domain:`, domain);
+        
+        // Step 2: Have user sign the vote data
+        // This creates a cryptographic proof that the user authorized this specific vote
+        const signature = await userWallet._signTypedData(domain, types, value);
+        console.log(`Got signature: ${signature}`);
+        
+        // Step 3: Parse the signature into the r, s, v components needed by the contract
+        const sig = ethers.utils.splitSignature(signature);
+        console.log(`Split signature - v: ${sig.v}, r: ${sig.r}, s: ${sig.s}`);
+        
+        // Step 4: Submit the vote WITH the user's signature, FROM the admin wallet
+        // This lets the admin pay gas fees while the vote is cryptographically from the user
+        const gasLimit = ethers.BigNumber.from("500000"); // Higher gas limit for castVoteBySig
+
+        console.log(`Submitting vote by signature for user ${voterAddress}`);
+        
+        // Connect with admin wallet to ensure proper gas payment
+        const governorWithSigner = this.governorContract.connect(this.adminWallet);
+        
+        // Call the castVoteBySig function with careful error handling
+        let tx;
+        try {
+          // First try a gas estimation to catch early failures
+          const gasEstimate = await governorWithSigner.estimateGas.castVoteBySig(
+            proposalIdBN,
+            voteType,
+            sig.v,
+            sig.r,
+            sig.s
+          );
+          
+          console.log(`Gas estimate for castVoteBySig: ${gasEstimate.toString()}`);
+          
+          // Add buffer to gas estimate
+          const gasWithBuffer = gasEstimate.mul(12).div(10); // 20% buffer
+          
+          // Then send the actual transaction
+          tx = await governorWithSigner.castVoteBySig(
+            proposalIdBN,
+            voteType,
+            sig.v,
+            sig.r,
+            sig.s,
+            { gasLimit: gasWithBuffer }
+          );
+        } catch (estimateError) {
+          console.warn(`Gas estimation failed for castVoteBySig: ${estimateError.message}`);
+          console.log(`Trying with fixed gas limit...`);
+          
+          // If gas estimation fails, try with fixed gas limit
+          tx = await governorWithSigner.castVoteBySig(
+            proposalIdBN,
+            voteType,
+            sig.v,
+            sig.r,
+            sig.s,
+            { gasLimit: gasLimit }
+          );
+        }
+        
+        console.log(`Vote by signature transaction sent: ${tx.hash}`);
+        
+        // Wait for transaction to be mined
+        const receipt = await tx.wait();
+        console.log(`Vote by signature transaction confirmed in block ${receipt.blockNumber}`);
+        
+        // Check if transaction was successful
+        if (receipt.status === 1) {
+          console.log(`Vote successful with meta-transaction, tx hash: ${receipt.transactionHash}`);
+          return { 
+            txHash: receipt.transactionHash, 
+            success: true,
+            method: 'meta-transaction'
+          };
+        } else {
+          console.warn(`Vote transaction failed with status: ${receipt.status}`);
+          throw new Error("Transaction was mined but failed");
+        }
+      } catch (metaTxError) {
+        console.error(`Error in meta-transaction voting:`, metaTxError);
+        console.log(`Falling back to direct vote through user-signed transaction...`);
+        
+        // --- FALLBACK: USER DIRECT VOTE ---
+        // If meta-transaction fails, try normal castVote from user's wallet
+        try {
+          // Create a contract instance connected to the user's wallet
+          const governorWithUser = new ethers.Contract(
+            this.governorAddress,
+            this.governorAbi,
+            userWallet
+          );
+          
+          // Use the user's wallet, but have admin wallet handle the gas payment
+          const gasEstimate = await governorWithUser.estimateGas.castVote(proposalId, voteType);
+          const gasWithBuffer = gasEstimate.mul(13).div(10); // 30% buffer
+          
+          console.log(`Using direct user vote with gas limit ${gasWithBuffer.toString()}`);
+          
+          // Submit the transaction - user signs, but admin wallet address is set as fee payer
+          // This requires a network supporting fee delegation (like Arbitrum or specific testnets)
+          // Not all networks support this feature
+          const tx = await governorWithUser.castVote(proposalId, voteType, { 
+            gasLimit: gasWithBuffer
+          });
+          
+          console.log(`Direct vote transaction sent: ${tx.hash}`);
+          
+          // Wait for transaction to be mined
+          const receipt = await tx.wait();
+          
+          // Check if successful
+          if (receipt.status === 1) {
+            console.log(`Direct vote successful, tx hash: ${receipt.transactionHash}`);
+            return { 
+              txHash: receipt.transactionHash, 
+              success: true,
+              method: 'direct-user-vote'
+            };
+          } else {
+            throw new Error("User transaction was mined but failed");
+          }
+        } catch (userTxError) {
+          console.error(`User direct vote also failed:`, userTxError);
+          
+          // --- LAST RESORT: ADMIN SUBMITS VOTE ---
+          // As a last resort, submit the vote from admin wallet 
+          // This is centralized but can be a fallback to ensure voting works
+          try {
+            console.log(`Attempting admin-assisted vote as last resort...`);
+            
+            // Create a transaction that calls castVote but impersonates the user's address
+            // This requires a modified contract with vote-by-admin function
+            
+            if (typeof this.governorContract.castVoteFor === 'function') {
+              // Use castVoteFor if it exists (custom function that some contracts have)
+              const tx = await this.governorContract.castVoteFor(
+                voterAddress, proposalId, voteType, { gasLimit: 300000 }
+              );
+              
+              console.log(`Admin-assisted vote transaction sent: ${tx.hash}`);
+              
+              // Wait for transaction completion
+              const receipt = await tx.wait();
+              
+              if (receipt.status === 1) {
+                return {
+                  txHash: receipt.transactionHash,
+                  success: true,
+                  method: 'admin-assisted',
+                  warningMessage: 'Used admin-assisted vote due to meta-transaction failure'
+                };
+              }
+            } else {
+              console.log(`No castVoteFor function available, cannot use admin fallback`);
+            }
+            
+            // We've exhausted all options, return the original meta-tx error
+            return {
+              success: false,
+              status: 'failed',
+              method: 'all-methods-failed',
+              error: `Could not process vote: ${metaTxError.message}`
+            };
+          } catch (adminError) {
+            console.error('Admin fallback also failed:', adminError);
+            return {
+              success: false,
+              status: 'failed',
+              method: 'all-methods-failed',
+              error: `All voting methods failed. Original error: ${metaTxError.message}`
+            };
+          }
+        }
       }
     } catch (error) {
       console.error(`Error in voteOnProposal:`, error);

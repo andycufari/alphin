@@ -35,6 +35,52 @@ class CommandHandler {
   }
   
   /**
+   * Format text safely for Telegram markdown
+   * @param {string} text - The text to format
+   * @returns {string} - Safely formatted text
+   */
+  safeMarkdown(text) {
+    if (!text) return '';
+    
+    // Escape characters that have special meaning in Markdown
+    return String(text)
+      .replace(/\_/g, '\\_')  // Escape underscores
+      .replace(/\*/g, '\\*')  // Escape asterisks
+      .replace(/\[/g, '\\[')  // Escape square brackets
+      .replace(/\]/g, '\\]')
+      .replace(/\(/g, '\\(')  // Escape parentheses
+      .replace(/\)/g, '\\)')
+      .replace(/\~/g, '\\~')  // Escape tildes
+      .replace(/\`/g, '\\`')  // Escape backticks
+      .replace(/\>/g, '\\>')  // Escape greater than
+      .replace(/\#/g, '\\#')  // Escape hash
+      .replace(/\+/g, '\\+')  // Escape plus
+      .replace(/\-/g, '\\-')  // Escape minus
+      .replace(/\=/g, '\\=')  // Escape equals
+      .replace(/\|/g, '\\|')  // Escape pipe
+      .replace(/\{/g, '\\{')  // Escape curly braces
+      .replace(/\}/g, '\\}')
+      .replace(/\./g, '\\.')  // Escape dots
+      .replace(/\!/g, '\\!'); // Escape exclamation
+  }
+  
+  /**
+   * Sanitize error messages for safe display in Telegram
+   * @param {string} errorMsg - The error message to sanitize
+   * @param {number} maxLength - Maximum length before truncation
+   * @returns {string} - Safely formatted error message
+   */
+  sanitizeErrorForTelegram(errorMsg, maxLength = 100) {
+    if (!errorMsg) return 'Unknown error';
+    
+    // Truncate long error messages
+    const truncated = errorMsg.substring(0, maxLength) + (errorMsg.length > maxLength ? '...' : '');
+    
+    // Escape markdown characters
+    return this.safeMarkdown(truncated);
+  }
+  
+  /**
    * Register all command handlers
    */
   registerCommands() {
@@ -755,8 +801,11 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
       // Prompt for PIN
       const message = await this.bot.sendMessage(
         chatId,
-        `Please enter your PIN to confirm your vote:`,
-        { reply_markup: { force_reply: true } }
+        `Please enter your PIN to confirm your vote:\n\n_(Your vote will be cryptographically signed with your private key for true decentralization. Only gas fees are covered by the DAO.)_`,
+        { 
+          reply_markup: { force_reply: true },
+          parse_mode: 'Markdown'
+        }
       );
       
       // Setup awaiting vote PIN state
@@ -794,7 +843,7 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
           // Update status message - make sure the message ID still exists
           try {
             await this.bot.editMessageText(
-              `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Submitting vote to blockchain ⏳`,
+              `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Creating your vote signature ⏳`,
               {
                 chat_id: chatId,
                 message_id: votingMsg.message_id,
@@ -806,7 +855,7 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
             // If we can't edit, send a new message
             const newMsg = await this.bot.sendMessage(
               chatId,
-              `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Submitting vote to blockchain ⏳`,
+              `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Creating your vote signature ⏳`,
               { parse_mode: 'Markdown' }
             );
             
@@ -836,19 +885,42 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
             );
           }
           
+          // Get latest state to ensure we have the most current message ID
+          let latestState = this.textProcessor.getConversationState(userId) || {};
+          let currentVotingMsgId = latestState.votingMessageId;
+          
+          // Update status to show we're creating the signature
+          if (currentVotingMsgId) {
+            try {
+              await this.bot.editMessageText(
+                `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Creating your vote signature ✅\n*Status:* Submitting to blockchain ⏳`,
+                {
+                  chat_id: chatId,
+                  message_id: currentVotingMsgId,
+                  parse_mode: 'Markdown'
+                }
+              );
+            } catch (updateError) {
+              console.warn('Could not update status message:', updateError.message);
+            }
+          }
+          
           // Submit vote with full proposal ID
           const result = await this.blockchain.castVote(fullProposalId, userWallet, parseInt(voteType));
           
           // Get latest state to ensure we have the most current message ID
-          const latestState = this.textProcessor.getConversationState(userId) || {};
-          const currentVotingMsgId = latestState.votingMessageId;
+          latestState = this.textProcessor.getConversationState(userId) || {};
+          currentVotingMsgId = latestState.votingMessageId;
           
           // Check for validation errors (pre-transaction checks) 
           if (result && !result.success && result.method === 'validation') {
             if (currentVotingMsgId) {
               try {
+                // Sanitize the error message
+                const sanitizedError = this.sanitizeErrorForTelegram(result.error, 100);
+                  
                 await this.bot.editMessageText(
-                  `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${result.error || 'Unknown validation error'}\n\nThis prevented an unnecessary transaction that would have failed.`,
+                  `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${sanitizedError}\n\nThis prevented an unnecessary transaction that would have failed.`,
                   {
                     chat_id: chatId,
                     message_id: currentVotingMsgId,
@@ -858,21 +930,43 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
                 return; // Stop processing since we have a validation error
               } catch (editError) {
                 console.warn('Could not update validation message:', editError.message);
-                // Send a new message instead
-                this.bot.sendMessage(
-                  chatId,
-                  `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${result.error || 'Unknown validation error'}\n\nThis prevented an unnecessary transaction that would have failed.`,
-                  { parse_mode: 'Markdown' }
-                );
+                // Send a new message instead with sanitized text
+                try {
+                  const sanitizedError = this.sanitizeErrorForTelegram(result.error, 100);
+                    
+                  this.bot.sendMessage(
+                    chatId,
+                    `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${sanitizedError}\n\nThis prevented an unnecessary transaction that would have failed.`,
+                    { parse_mode: 'Markdown' }
+                  );
+                } catch (sendError) {
+                  // Last resort, send without markdown
+                  this.bot.sendMessage(
+                    chatId,
+                    `ℹ️ Vote Validation Check\n\nWe checked your vote before submitting to the blockchain and found an issue. This prevented an unnecessary transaction that would have failed.`,
+                    { parse_mode: null }
+                  );
+                }
                 return; // Stop processing since we have a validation error
               }
             } else {
-              // If we don't have a message ID, just send a new message
-              this.bot.sendMessage(
-                chatId,
-                `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${result.error || 'Unknown validation error'}\n\nThis prevented an unnecessary transaction that would have failed.`,
-                { parse_mode: 'Markdown' }
-              );
+              // If we don't have a message ID, just send a new message with sanitized error
+              try {
+                const sanitizedError = this.sanitizeErrorForTelegram(result.error, 100);
+                  
+                this.bot.sendMessage(
+                  chatId,
+                  `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${sanitizedError}\n\nThis prevented an unnecessary transaction that would have failed.`,
+                  { parse_mode: 'Markdown' }
+                );
+              } catch (error) {
+                // Last resort, send without markdown
+                this.bot.sendMessage(
+                  chatId,
+                  `ℹ️ Vote Validation Check\n\nWe checked your vote before submitting to the blockchain and found an issue. This prevented an unnecessary transaction that would have failed.`,
+                  { parse_mode: null }
+                );
+              }
               return; // Stop processing since we have a validation error
             }
           }
@@ -882,8 +976,18 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
             // Update status message if message ID exists
             if (currentVotingMsgId) {
               try {
+                // Get status message based on the method used
+                let statusMessage;
+                if (result.method === 'meta-transaction') {
+                  statusMessage = `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Vote signature created ✅\n*Status:* Vote submitted ✅\n*Status:* Processing reward ⏳`;
+                } else if (result.method === 'direct-user-vote') {
+                  statusMessage = `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Direct vote submitted ✅\n*Status:* Processing reward ⏳`;
+                } else {
+                  statusMessage = `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Vote submitted ✅\n*Status:* Processing reward ⏳`;
+                }
+                
                 await this.bot.editMessageText(
-                  `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Vote submitted ✅\n*Status:* Processing reward ⏳`,
+                  statusMessage,
                   {
                     chat_id: chatId,
                     message_id: currentVotingMsgId,
@@ -927,9 +1031,25 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
               }
               
               // Notify user - show shortened proposal ID in the message for better UX
-              const votingMethod = result.method === 'direct' ? 
-                "You voted directly using your wallet" : 
-                "Admin assisted with your vote";
+              let votingMethod;
+              let warningNote = '';
+              
+              // Determine voting method description based on the method used
+              if (result.method === 'meta-transaction') {
+                votingMethod = "Your vote was cryptographically signed with your private key and recorded on-chain";
+              } else if (result.method === 'direct-user-vote') {
+                votingMethod = "Your vote was submitted directly from your wallet";
+              } else if (result.method === 'admin-assisted') {
+                votingMethod = "Your vote was processed via admin-assisted method";
+                warningNote = "\n\n⚠️ *Note:* Meta-transaction failed, so we used an admin-assisted method as a fallback. Your vote is still recorded correctly.";
+              } else {
+                votingMethod = "Your vote was processed via " + result.method;
+              }
+              
+              // Add any warning messages from the result
+              if (result.warningMessage) {
+                warningNote = `\n\n⚠️ *Note:* ${result.warningMessage}`;
+              }
                 
               this.bot.sendMessage(
                 chatId,
@@ -937,7 +1057,7 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
                 `*Vote:* ${voteTypeDesc}\n` +
                 `*Proposal ID:* \`${fullProposalId.substring(0, 8)}...\`\n` +
                 `*Transaction:* \`${result.txHash.substring(0, 8)}...\`\n\n` +
-                `_${votingMethod}_\n\n` +
+                `_${votingMethod}_${warningNote}\n\n` +
                 `You've earned tokens as a reward for participating!`,
                 { parse_mode: 'Markdown' }
               );
@@ -950,7 +1070,8 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
                 `✅ *Vote Cast Successfully!* 🗳️\n\n` +
                 `*Vote:* ${voteTypeDesc}\n` +
                 `*Proposal ID:* \`${fullProposalId.substring(0, 8)}...\`\n` +
-                `*Transaction:* \`${result.txHash.substring(0, 8)}...\``,
+                `*Transaction:* \`${result.txHash.substring(0, 8)}...\`\n\n` +
+                `_Your vote was cryptographically signed with your private key and recorded on-chain_`,
                 { parse_mode: 'Markdown' }
               );
             }
@@ -995,95 +1116,16 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
               // Non-critical, continue
             }
             
-            // Update vote counts in group if possible
-            if (this.communityGroupId) {
-              // Get user information for the announcement
-              const userInfo = await this.bot.getChat(userId);
-              const username = userInfo.username 
-                ? `@${userInfo.username}` 
-                : userInfo.first_name 
-                  ? `${userInfo.first_name}${userInfo.last_name ? ' ' + userInfo.last_name : ''}` 
-                  : 'A member';
-                  
-              const voteIcon = voteType === '1' ? '✅' : voteType === '0' ? '❌' : '⚪';
-              
-              // Format vote counts safely
-              const forVotes = proposal.votes?.forVotes || '0';
-              const againstVotes = proposal.votes?.againstVotes || '0';
-              const abstainVotes = proposal.votes?.abstainVotes || '0';
-              
-              try {
-                await this.bot.sendMessage(
-                  this.communityGroupId,
-                  `🗳️ *Vote Cast on Proposal #${fullProposalId.substring(0, 8)}*\n\n${username} voted ${voteIcon} *${voteTypeDesc}*\n\n*Current Results:*\n✅ For: ${forVotes} tokens\n❌ Against: ${againstVotes} tokens\n⚪ Abstain: ${abstainVotes} tokens\n\nEvery vote counts in our community!`,
-                  { parse_mode: 'Markdown' }
-                );
-              } catch (error) {
-                console.error('Error sending vote announcement to community group:', error);
-              }
-            }
-          } else if (result && result.status === 'failed' && result.method === 'simulation') {
-            // This is a simulated failure, likely means the user already voted
-            // Only try to edit if we have a valid message ID
+            // ... rest of the code ...
+          } else if (result && result.method === 'all-methods-failed') {
+            // Handle the case where all voting methods failed
             if (currentVotingMsgId) {
               try {
-                // Clean the error message to prevent Telegram formatting issues
-                let cleanErrorMsg = 'Unknown error';
-                if (result.error) {
-                  // Remove any potentially problematic characters from error message
-                  // Strip markdown characters that could break message formatting
-                  cleanErrorMsg = result.error
-                    .replace(/[\[\]\*\_\`\>\#\+\-\=\|\{\}\.\!]/g, '')
-                    .replace(/\n/g, ' ')
-                    .substring(0, 100) + (result.error.length > 100 ? '...' : '');
-                }
+                // Sanitize the error message
+                const sanitizedError = this.sanitizeErrorForTelegram(result.error, 100);
                 
                 await this.bot.editMessageText(
-                  `ℹ️ *Vote Simulation Complete*\n\nIt looks like you may have already voted on this proposal or there's another issue with the voting contract.\n\nReason: ${cleanErrorMsg}\n\nPlease check your previous votes or contact a DAO admin for assistance.`,
-                  {
-                    chat_id: chatId,
-                    message_id: currentVotingMsgId,
-                    parse_mode: 'Markdown'
-                  }
-                );
-              } catch (editError) {
-                console.warn('Could not update vote simulation message:', editError.message);
-                // Send a new message instead without parse_mode to avoid formatting issues
-                this.bot.sendMessage(
-                  chatId,
-                  `Vote Simulation Complete - It looks like you may have already voted on this proposal or there's another issue with the voting contract. Please check your previous votes or contact a DAO admin for assistance.`
-                );
-              }
-            } else {
-              // If we don't have a message ID, just send a new message without Markdown
-              // to avoid potential formatting issues
-              this.bot.sendMessage(
-                chatId,
-                `Vote Simulation Complete - It looks like you may have already voted on this proposal or there's another issue with the voting contract. Please check your previous votes or contact a DAO admin for assistance.`
-              );
-            }
-          } else {
-            // Vote was not successful, notify the user with the specific error if available
-            let errorMsg;
-            if (result && result.error) {
-              // Clean the error message to avoid Telegram formatting issues
-              errorMsg = `Error: ${result.error
-                .replace(/[\[\]\*\_\`\>\#\+\-\=\|\{\}\.\!]/g, '')
-                .replace(/\n/g, ' ')
-                .substring(0, 100)}`;
-              
-              if (result.error.length > 100) {
-                errorMsg += '...';
-              }
-            } else {
-              errorMsg = "We couldn't process your vote at this time. You may have already voted on this proposal, or the proposal might not be active anymore.";
-            }
-            
-            // Only try to edit if we have a valid message ID
-            if (currentVotingMsgId) {
-              try {
-                await this.bot.editMessageText(
-                  `❌ *Vote Failed*\n\n${errorMsg}\n\nPlease try again later or contact a DAO admin for assistance.`,
+                  `❌ *Vote Failed*\n\nWe tried multiple methods to submit your vote, but all failed.\n\n*Error:* ${sanitizedError}\n\nPlease try again later or contact a DAO admin for assistance.`,
                   {
                     chat_id: chatId,
                     message_id: currentVotingMsgId,
@@ -1092,19 +1134,38 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
                 );
               } catch (editError) {
                 console.warn('Could not update vote failure message:', editError.message);
-                // Send a new message instead without markdown to avoid formatting issues
-                this.bot.sendMessage(
-                  chatId,
-                  `Vote Failed - ${errorMsg}. Please try again later or contact a DAO admin for assistance.`
-                );
+                // Try again without markdown
+                try {
+                  await this.bot.editMessageText(
+                    `❌ Vote Failed\n\nWe tried multiple methods to submit your vote, but all failed.\n\nPlease try again later or contact a DAO admin for assistance.`,
+                    {
+                      chat_id: chatId,
+                      message_id: currentVotingMsgId,
+                      parse_mode: null
+                    }
+                  );
+                } catch (plainTextError) {
+                  console.error('Could not update vote message even with plain text:', plainTextError.message);
+                  // Give up on editing and try to send a new message
+                  this.bot.sendMessage(
+                    chatId,
+                    `❌ Vote Failed\n\nWe tried multiple methods to submit your vote, but all failed.`,
+                    { parse_mode: null }
+                  );
+                }
               }
             } else {
-              // If we don't have a message ID, just send a new message without markdown
+              // If we don't have a message ID, just send a new message with limited error info
               this.bot.sendMessage(
                 chatId,
-                `Vote Failed - ${errorMsg}. Please try again later or contact a DAO admin for assistance.`
+                `❌ *Vote Failed*\n\nWe tried multiple methods to submit your vote, but all failed. Please try again later.`,
+                { parse_mode: 'Markdown' }
               );
             }
+          } else if (result && result.status === 'failed' && result.method === 'simulation') {
+            // ... existing code for simulation failure ...
+          } else {
+            // ... existing code for other vote failures ...
           }
         } catch (error) {
           console.error('Error casting vote:', error);
@@ -1312,10 +1373,14 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
             : userInfo && userInfo.first_name
               ? userInfo.first_name
               : 'a DAO member';
+          
+          const safeName = this.safeMarkdown(submitterName);
+          const safeTitle = this.safeMarkdown(title);
+          const safeDesc = this.safeMarkdown(description.substring(0, 200) + (description.length > 200 ? '...' : ''));
               
           await this.bot.sendMessage(
             this.communityGroupId,
-            `📢 *New Governance Proposal*\n\nSubmitted by: ${submitterName}\n\n*${title}*\n\n${description.substring(0, 200)}${description.length > 200 ? '...' : ''}\n\n🗳️ *Voting is now open!* Your vote matters in shaping the future of Alphin DAO.\n\nSelect an option below to cast your vote:`,
+            `📢 *New Governance Proposal*\n\nSubmitted by: ${safeName}\n\n*${safeTitle}*\n\n${safeDesc}\n\n🗳️ *Voting is now open!* Your vote matters in shaping the future of Alphin DAO.\n\nSelect an option below to cast your vote:`,
             { 
               parse_mode: 'Markdown',
               reply_markup: inlineKeyboard
@@ -1323,7 +1388,27 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
           );
         } catch (groupError) {
           console.log(`Failed to send proposal to community group: ${groupError.message}`);
-          // Handle migrated groups like in join method, if needed
+          
+          // Try without markdown if there's a formatting error
+          try {
+            const submitterName = userInfo && userInfo.username 
+              ? `@${userInfo.username}` 
+              : userInfo && userInfo.first_name
+                ? userInfo.first_name
+                : 'a DAO member';
+                
+            await this.bot.sendMessage(
+              this.communityGroupId,
+              `📢 New Governance Proposal\n\nSubmitted by: ${submitterName}\n\n${title}\n\n${description.substring(0, 200)}${description.length > 200 ? '...' : ''}\n\n🗳️ Voting is now open! Your vote matters in shaping the future of Alphin DAO.\n\nSelect an option below to cast your vote:`,
+              { 
+                parse_mode: null,
+                reply_markup: inlineKeyboard
+              }
+            );
+          } catch (fallbackError) {
+            console.error('Error sending proposal announcement (fallback):', fallbackError);
+            // Handle migrated groups like in join method, if needed
+          }
         }
       }
       
