@@ -15,6 +15,20 @@ const helpers = require('./utils/helpers');
 // Initialize the bot
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
+// Store the bot username globally for use in handlers
+let BOT_USERNAME = 'AlphinDAO_bot'; // Default fallback
+
+// Get bot info at startup to verify username
+bot.getMe().then(botInfo => {
+  console.log(`[INFO] Bot started successfully: @${botInfo.username}`);
+  console.log(`[INFO] Bot name: ${botInfo.first_name}`);
+  BOT_USERNAME = botInfo.username; // Set the actual username
+  
+  if (botInfo.username !== 'AlphinDAO_bot') {
+    console.log(`[WARNING] Bot username is @${botInfo.username}, but was expecting @AlphinDAO_bot. Updated to use actual username.`);
+  }
+});
+
 // Initialize database
 const db = new sqlite3.Database('./dao_bot.sqlite');
 db.serialize(() => {
@@ -94,20 +108,32 @@ bot.on('message', (msg) => {
   }
   
   // Handle group mentions
-  if (msg.chat.type !== 'private' && msg.text && (
-    msg.text.includes('@AlphinDAO_bot') || 
-    (msg.reply_to_message && msg.reply_to_message.from.username === 'AlphinDAO_bot')
-  )) {
-    console.log('[DEBUG] Group mention condition matched, forwarding to processGroupMention');
-    textProcessor.processGroupMention(msg, bot);
-    return;
-  } else if (msg.chat.type !== 'private' && msg.text) {
-    console.log('[DEBUG] Message in group but NOT matched as mention');
-    if (msg.text.includes('@')) {
-      console.log(`[DEBUG] Contains @ symbol: ${msg.text}`);
-    }
+  if (msg.chat.type !== 'private' && msg.text) {
+    console.log(`[DEBUG] Processing group message: "${msg.text}"`);
+    console.log(`[DEBUG] Bot username check: includes @${BOT_USERNAME} = ${msg.text.includes('@' + BOT_USERNAME)}`);
+    
     if (msg.reply_to_message) {
-      console.log(`[DEBUG] Is reply to: ${JSON.stringify(msg.reply_to_message.from)}`);
+      console.log(`[DEBUG] This is a reply message. Reply to username: ${msg.reply_to_message.from?.username || 'undefined'}`);
+    }
+    
+    if (
+      msg.text.includes('@' + BOT_USERNAME) || 
+      msg.text.toLowerCase().includes('@' + BOT_USERNAME.toLowerCase()) ||
+      (msg.reply_to_message && msg.reply_to_message.from?.username === BOT_USERNAME)
+    ) {
+      console.log('[DEBUG] Group mention condition matched, forwarding to processGroupMention');
+      textProcessor.processGroupMention(msg, bot);
+      return;
+    } else {
+      console.log('[DEBUG] Message in group but NOT matched as mention');
+      if (msg.text.includes('@')) {
+        console.log(`[DEBUG] Contains @ symbol: ${msg.text}`);
+        // Log all @ mentions in the message to check for case sensitivity issues
+        const mentions = msg.text.match(/@\w+/g);
+        if (mentions) {
+          console.log(`[DEBUG] All mentions in message: ${JSON.stringify(mentions)}`);
+        }
+      }
     }
   }
   

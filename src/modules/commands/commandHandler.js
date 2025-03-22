@@ -36,13 +36,21 @@ class CommandHandler {
    * Register all command handlers
    */
   registerCommands() {
-    // Set up main menu commands - focusing on core implemented features
+    // Different command sets for private chats vs group chats
     this.bot.setMyCommands([
       { command: 'start', description: '🚀 Start interacting with the DAO' },
       { command: 'join', description: '🔑 Join the DAO' },
       { command: 'balance', description: '💰 Check your token balance' },
-      { command: 'help', description: '❓ Get help' }
-    ]);
+      { command: 'proposal', description: '📝 Create a new proposal' },
+      { command: 'help', description: '❓ Get help' },
+      { command: 'whatisdao', description: '🏛️ Learn about DAOs' }
+    ], { scope: { type: 'all_private_chats' } });
+    
+    // Limited commands for groups - only help and whatisdao
+    this.bot.setMyCommands([
+      { command: 'help', description: '❓ Get help with Alphin DAO' },
+      { command: 'whatisdao', description: '🏛️ Learn about Alphin DAO' }
+    ], { scope: { type: 'all_group_chats' } });
     
     // Command handlers
     this.bot.onText(/\/start/, this.handleStart.bind(this));
@@ -63,6 +71,7 @@ class CommandHandler {
   async handleStart(msg) {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    const isPrivateChat = msg.chat.type === 'private';
     
     // Determine if this is a deep link with parameters
     const match = msg.text.match(/\/start vote_(.+)_(.+)/);
@@ -72,7 +81,16 @@ class CommandHandler {
       return this.handleVoteAction(chatId, userId, proposalId, voteType);
     }
     
-    // Check if user is already a DAO member
+    // In group chats, provide a simple informational message
+    if (!isPrivateChat) {
+      return this.bot.sendMessage(
+        chatId,
+        `👋 Hi! I'm the Alphin DAO bot. To interact with the DAO, please message me directly at @AlphinDAO_bot.\n\nIn private chat, you can join the DAO, create proposals, vote, and more!`,
+        { reply_to_message_id: msg.message_id }
+      );
+    }
+    
+    // For private chats, check if user is already a DAO member
     const isMember = await this.wallets.hasWallet(userId);
     
     let welcomeMessage = `Welcome to Alphin, your DAO assistant! 🚀\n\n`;
@@ -106,7 +124,7 @@ class CommandHandler {
       };
     }
     
-    // Send welcome message with appropriate menu options
+    // Send welcome message with appropriate menu options (private chat only)
     this.bot.sendMessage(chatId, welcomeMessage, keyboard);
   }
   
@@ -117,6 +135,7 @@ class CommandHandler {
   async handleJoinDAO(msg) {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    const username = msg.from.username;
     
     // Only process private messages for actions requiring signing
     if (msg.chat.type !== 'private') {
@@ -131,9 +150,13 @@ class CommandHandler {
         const address = await this.wallets.getWalletAddress(userId);
         const balance = await this.blockchain.getTokenBalance(address);
         
+        // Get blockchain explorer URL based on network
+        const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
+        const explorerUrl = this.getExplorerUrl(network, address);
+        
         return this.bot.sendMessage(
           chatId,
-          `You are already a member of the DAO!\n\nYour wallet address: \`${address}\`\nYour token balance: ${balance} tokens\n\nYou can use these tokens to vote on proposals or create your own proposals.`,
+          `You are already a member of the DAO!\n\nYour wallet address: \`${address}\`\nYour token balance: ${balance} tokens\n\n[View on Block Explorer](${explorerUrl})`,
           { parse_mode: 'Markdown' }
         );
       }
@@ -151,30 +174,71 @@ class CommandHandler {
           // Create wallet for user
           const address = await this.wallets.createWallet(userId, pin);
           
-          // Send welcome tokens
-          await this.blockchain.sendWelcomeTokens(address);
+          // Send welcome tokens - pass userId to check if admin
+          const result = await this.blockchain.sendWelcomeTokens(address, userId);
           
-          // Notify user
-          const welcomeTokens = process.env.WELCOME_TOKENS || "10";
+          // Get blockchain explorer URL based on network
+          const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
+          const explorerUrl = this.getExplorerUrl(network, address);
+          const txExplorerUrl = this.getExplorerUrl(network, result.txHash, 'tx');
+          
+          // Add delegation note if it failed
+          let delegationNote = '';
+          if (!result.delegationSuccess) {
+            delegationNote = '\n\n⚠️ *Note:* Token delegation failed. You may need to manually delegate your tokens to vote on proposals. This is usually a temporary issue with the blockchain network.';
+          }
+          
+          // Customize message based on admin status
+          let welcomeMessage;
+          if (result.isAdmin) {
+            welcomeMessage = `Welcome to the DAO, Admin! 🎉\n\nYour wallet has been created and ${result.amount} admin tokens have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals and create new ones right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
+          } else {
+            welcomeMessage = `Welcome to the DAO! 🎉\n\nYour wallet has been created and ${result.amount} tokens have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
+          }
           
           this.bot.sendMessage(
             chatId,
-            `Welcome to the DAO! 🎉\n\nYour wallet has been created and ${welcomeTokens} tokens have been sent to your address.\n\nWallet address: \`${address}\`\n\nYour tokens are already delegated, so you can vote on proposals right away! Keep your PIN secure - you'll need it for DAO actions.`,
+            welcomeMessage,
             { parse_mode: 'Markdown' }
           );
           
           // Notify community group if configured
           if (this.communityGroupId) {
-            const username = msg.from.username 
-              ? `@${msg.from.username}` 
+            const usernameDisplay = username 
+              ? `@${username}` 
               : msg.from.first_name 
                 ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` 
                 : 'A new member';
                 
-            this.bot.sendMessage(
-              this.communityGroupId,
-              `🎉 Welcome to Alphin DAO! ${username} has just joined our community.\n\nThey received ${welcomeTokens} governance tokens and can now participate in proposals and voting.\n\nLet's give them a warm welcome! 👋`
-            );
+            const roleMessage = result.isAdmin ? ' as an admin' : '';
+            
+            try {
+              await this.bot.sendMessage(
+                this.communityGroupId,
+                `🎉 Welcome to Alphin DAO! ${usernameDisplay} has just joined our community${roleMessage}.\n\nThey received ${result.amount} governance tokens and can now participate in proposals and voting.\n\nLet's give them a warm welcome! 👋`
+              );
+            } catch (groupError) {
+              console.log(`Failed to send message to community group: ${groupError.message}`);
+              
+              // If the error is about supergroup, try to use the new chat ID
+              if (groupError.message.includes('supergroup chat')) {
+                try {
+                  // Try to handle the supergroup migration
+                  const migrationInfo = groupError.response?.parameters;
+                  if (migrationInfo && migrationInfo.migrate_to_chat_id) {
+                    console.log(`Group migrated to supergroup with ID: ${migrationInfo.migrate_to_chat_id}`);
+                    await this.bot.sendMessage(
+                      migrationInfo.migrate_to_chat_id,
+                      `🎉 Welcome to Alphin DAO! ${usernameDisplay} has just joined our community${roleMessage}.\n\nThey received ${result.amount} governance tokens and can now participate in proposals and voting.\n\nLet's give them a warm welcome! 👋`
+                    );
+                  }
+                } catch (innerError) {
+                  console.log(`Failed to send message to supergroup: ${innerError.message}`);
+                }
+              }
+              
+              // No need to throw error here, the user has already joined successfully
+            }
           }
         } catch (error) {
           console.error('Error in join process:', error);
@@ -188,8 +252,8 @@ class CommandHandler {
       this.textProcessor.setConversationState(userId, state);
       
     } catch (error) {
-      console.error('Error in handleJoinDAO:', error);
-      this.bot.sendMessage(chatId, `Something went wrong: ${error.message}`);
+      console.error('Error in join process:', error);
+      this.bot.sendMessage(chatId, `Error joining the DAO: ${error.message}`);
     }
   }
   
@@ -324,11 +388,12 @@ class CommandHandler {
       const balance = await this.blockchain.getTokenBalance(address);
       
       // Get blockchain explorer URL based on network
-      const explorerUrl = `https://blockscout.com/eth/mainnet/address/${address}`; // Example - should be configured by network
+      const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
+      const explorerUrl = this.getExplorerUrl(network, address);
       
       this.bot.sendMessage(
         chatId,
-        `Your DAO Token Balance: *${balance} tokens*\n\nWallet Address: \`${address}\`\n\n[View on Blockchain Explorer](${explorerUrl})`,
+        `Your DAO Token Balance: *${balance} tokens*\n\nWallet Address: \`${address}\`\n\n[View on Block Explorer](${explorerUrl})`,
         { parse_mode: 'Markdown' }
       );
       
@@ -345,11 +410,17 @@ class CommandHandler {
   async handleHelp(msg) {
     const chatId = msg.chat.id;
     
-    // Only process in private chat
+    // Different behavior for private vs group chats
     if (msg.chat.type !== 'private') {
-      return this.bot.sendMessage(chatId, 'Please talk to me directly for help with DAO functions.');
+      // In group chats, direct users to private chat
+      return this.bot.sendMessage(
+        chatId,
+        `To get full help with Alphin DAO features, please message me directly at @AlphinDAO_bot.\n\nPrivate chat provides a more interactive experience with custom menus and detailed guidance.`,
+        { reply_to_message_id: msg.message_id }
+      );
     }
     
+    // In private chats, show help topics with inline keyboard
     const helpTopics = {
       inline_keyboard: [
         [
@@ -382,6 +453,7 @@ class CommandHandler {
    */
   async handleWhatIsDAO(msg) {
     const chatId = msg.chat.id;
+    const isPrivateChat = msg.chat.type === 'private';
     
     // Create a detailed explanation of DAOs with a focus on onboarding
     const daoExplanation = `
@@ -397,24 +469,33 @@ Alphin DAO is a *Decentralized Autonomous Organization* - a community that makes
 • Decisions are executed automatically on the blockchain
 
 *The best part?* You don't need any technical knowledge! Alphin handles all the complex blockchain stuff behind the scenes.
-
-Ready to join? Just tap the "🔑 Join DAO" button to get started and receive your first tokens!
+${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get started and receive your first tokens!' : '\nTo join, start a private chat with me by clicking @AlphinDAO_bot'}
 `;
 
-    this.bot.sendMessage(
-      chatId,
-      daoExplanation,
-      { 
-        parse_mode: 'Markdown',
-        reply_markup: {
-          keyboard: [
-            [{ text: '🔑 Join DAO' }],
-            [{ text: '🏁 Back to Start' }]
-          ],
-          resize_keyboard: true
+    if (isPrivateChat) {
+      // In private chats, show action buttons
+      this.bot.sendMessage(
+        chatId,
+        daoExplanation,
+        { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: [
+              [{ text: '🔑 Join DAO' }],
+              [{ text: '🏁 Back to Start' }]
+            ],
+            resize_keyboard: true
+          }
         }
-      }
-    );
+      );
+    } else {
+      // In group chats, no action buttons
+      this.bot.sendMessage(
+        chatId,
+        daoExplanation,
+        { parse_mode: 'Markdown' }
+      );
+    }
   }
   
   /**
@@ -543,10 +624,10 @@ Ready to join? Just tap the "🔑 Join DAO" button to get started and receive yo
           if (this.communityGroupId) {
             // This would be more complex in practice - would need to store original message ID
             // For now, just send an update
-            const username = msg.from.username 
-              ? `@${msg.from.username}` 
-              : msg.from.first_name 
-                ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` 
+            const username = callbackQuery?.from?.username 
+              ? `@${callbackQuery.from.username}` 
+              : callbackQuery?.from?.first_name 
+                ? `${callbackQuery.from.first_name}${callbackQuery.from.last_name ? ' ' + callbackQuery.from.last_name : ''}` 
                 : 'A member';
                 
             const voteIcon = voteType === '1' ? '✅' : voteType === '0' ? '❌' : '⚪';
@@ -609,6 +690,33 @@ Ready to join? Just tap the "🔑 Join DAO" button to get started and receive yo
         { parse_mode: 'Markdown' }
       );
     }
+  }
+  
+  /**
+   * Get blockchain explorer URL based on network and address/transaction
+   * @param {string} network - The blockchain network (e.g., 'sepolia', 'mainnet')
+   * @param {string} hash - The address or transaction hash
+   * @param {string} type - Type of URL ('address' or 'tx')
+   * @returns {string} - The explorer URL
+   */
+  getExplorerUrl(network, hash, type = 'address') {
+    // Define base URLs for different networks
+    const explorers = {
+      'mainnet': 'https://etherscan.io',
+      'goerli': 'https://goerli.etherscan.io',
+      'sepolia': 'https://sepolia.etherscan.io',
+      'optimism': 'https://optimistic.etherscan.io',
+      'arbitrum': 'https://arbiscan.io',
+      'polygon': 'https://polygonscan.com',
+      'bsc': 'https://bscscan.com',
+      'avalanche': 'https://snowtrace.io',
+      // Add more networks as needed
+    };
+    
+    // Default to Sepolia if network not found
+    const baseUrl = explorers[network.toLowerCase()] || explorers['sepolia'];
+    
+    return `${baseUrl}/${type}/${hash}`;
   }
 }
 

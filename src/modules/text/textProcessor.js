@@ -9,6 +9,7 @@ class TextProcessor {
   constructor(aiService) {
     this.ai = aiService;
     this.conversationStates = new Map();
+    this.botUsername = null; // Will be set when processing messages
     
     // Define states for conversation flows
     this.STATES = {
@@ -74,25 +75,80 @@ class TextProcessor {
    */
   async processGroupMention(msg, bot) {
     const chatId = msg.chat.id;
-    let messageText = msg.text;
+    let messageText = msg.text || '';
     
-    // Remove bot username from message
-    if (messageText.includes('@AlphinDAO_bot')) {
-      messageText = messageText.replace('@AlphinDAO_bot', '').trim();
+    // Get bot info if we don't have it yet
+    if (!this.botUsername) {
+      try {
+        const botInfo = await bot.getMe();
+        this.botUsername = botInfo.username;
+        console.log(`[DEBUG] TextProcessor: Got bot username: ${this.botUsername}`);
+      } catch (err) {
+        console.error(`[ERROR] TextProcessor: Failed to get bot info: ${err.message}`);
+        this.botUsername = 'AlphinDAO_bot'; // Fallback
+      }
     }
     
-    console.log(`[DEBUG] Processing group mention in chatId: ${chatId}`);
-    console.log(`[DEBUG] Message text: "${messageText}"`);
-    console.log(`[DEBUG] Full message object: ${JSON.stringify(msg, null, 2)}`);
-    console.log(`[DEBUG] Community group ID from env: ${process.env.COMMUNITY_GROUP_ID}`);
+    console.log(`[DEBUG] TextProcessor: Processing group mention in chatId: ${chatId}`);
+    console.log(`[DEBUG] TextProcessor: Original message text: "${messageText}"`);
+    
+    // Remove bot username from message - handle case variations
+    const mentionPattern = new RegExp(`@${this.botUsername}`, 'i'); // Case-insensitive match
+    if (mentionPattern.test(messageText)) {
+      messageText = messageText.replace(mentionPattern, '').trim();
+      console.log(`[DEBUG] TextProcessor: Removed bot mention. New text: "${messageText}"`);
+    }
+    
+    console.log(`[DEBUG] TextProcessor: Processed message text after username removal: "${messageText}"`);
+    console.log(`[DEBUG] TextProcessor: Sending to AI service for processing`);
     
     // Get information about current DAO state to provide as context
     const groupContext = `This is the Alphin DAO community group. Users can interact with the Alphin DAO through private chat with the bot. The bot helps users join the DAO, create proposals, vote, and earn tokens for participation.`;
     
     try {
       const response = await this.ai.processGroupMention(messageText, groupContext);
-      console.log(`[DEBUG] AI response: "${response}"`);
-      bot.sendMessage(chatId, response, { reply_to_message_id: msg.message_id });
+      console.log(`[DEBUG] TextProcessor: AI response received: "${response}"`);
+      
+      // Fix Markdown formatting before sending
+      let sanitizedResponse = response;
+      try {
+        // Ensure proper Markdown formatting by escaping special characters 
+        // and ensuring all formatting tags are properly closed
+        const markdownChars = ['\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!'];
+        markdownChars.forEach(char => {
+          if (char !== '*' && char !== '_' && char !== '`') { // Keep formatting characters
+            sanitizedResponse = sanitizedResponse.replace(new RegExp('\\' + char, 'g'), '\\' + char);
+          }
+        });
+        
+        // Verify all formatting tags are properly closed
+        const asteriskCount = (sanitizedResponse.match(/\*/g) || []).length;
+        if (asteriskCount % 2 !== 0) {
+          sanitizedResponse = sanitizedResponse.replace(/\*([^\*]*)$/g, '$1'); // Remove trailing *
+        }
+        
+        // Simple validation to check markdown is valid
+        console.log(`[DEBUG] TextProcessor: Sending sanitized response`);
+      } catch (err) {
+        console.log(`[DEBUG] TextProcessor: Error sanitizing Markdown, falling back to plain text`);
+        sanitizedResponse = response.replace(/\*/g, '').replace(/_/g, ''); // Strip all formatting
+      }
+      
+      bot.sendMessage(chatId, sanitizedResponse, { 
+        reply_to_message_id: msg.message_id,
+        parse_mode: 'Markdown'
+      }).then(() => {
+        console.log(`[DEBUG] TextProcessor: Response sent successfully`);
+      }).catch(err => {
+        console.error(`[ERROR] TextProcessor: Failed to send response: ${err.message}`);
+        // Fallback to plain text if Markdown fails
+        console.log(`[DEBUG] TextProcessor: Trying to send as plain text instead`);
+        bot.sendMessage(chatId, response.replace(/\*/g, '').replace(/_/g, ''), {
+          reply_to_message_id: msg.message_id
+        }).catch(fallbackErr => {
+          console.error(`[ERROR] TextProcessor: Even plain text failed: ${fallbackErr.message}`);
+        });
+      });
     } catch (error) {
       console.error('Error processing group mention with AI:', error);
       bot.sendMessage(

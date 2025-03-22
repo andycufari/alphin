@@ -13,24 +13,48 @@ class BlockchainManager {
   /**
    * Send welcome tokens to a new user
    * @param {string} userAddress - User's wallet address
+   * @param {string} userId - User's Telegram ID
    * @returns {Promise<Object>} - Transaction details
    */
-  async sendWelcomeTokens(userAddress) {
-    console.log(`Sending welcome tokens to ${userAddress}`);
-    const welcomeAmount = process.env.WELCOME_TOKENS || "10";
+  async sendWelcomeTokens(userAddress, userId) {
+    console.log(`Sending welcome tokens to ${userAddress} for user ID: ${userId || 'unknown'}`);
+    
+    // Determine if user is an admin by ID
+    const adminsList = process.env.DAO_ADMINS ? process.env.DAO_ADMINS.split(',') : [];
+    const isAdmin = userId && adminsList.includes(userId.toString());
+    
+    // Choose token amount based on admin status
+    let welcomeAmount;
+    if (isAdmin) {
+      welcomeAmount = process.env.WELCOME_ADMINS || "10000";
+      console.log(`User ID ${userId} is an admin, sending ${welcomeAmount} tokens`);
+    } else {
+      welcomeAmount = process.env.WELCOME_TOKENS || "10";
+      console.log(`User is a regular member, sending ${welcomeAmount} tokens`);
+    }
     
     try {
       // Transfer tokens from admin wallet to user
       const txResult = await this.service.transferTokens(userAddress, welcomeAmount);
       console.log('Welcome tokens sent:', txResult);
       
-      // Automatically delegate tokens to self to enable voting
-      await this.delegateTokens(userAddress, userAddress);
+      // Try to delegate tokens, but don't fail if delegation fails
+      let delegationSuccess = false;
+      try {
+        // Automatically delegate tokens to self to enable voting
+        await this.delegateTokens(userAddress, userAddress);
+        delegationSuccess = true;
+      } catch (delegationError) {
+        console.error('Warning: Token delegation failed, but tokens were sent successfully:', delegationError);
+        // Continue without failing - user can delegate manually later
+      }
       
       return {
         success: true,
         amount: welcomeAmount,
-        txHash: txResult.txHash
+        txHash: txResult.txHash,
+        isAdmin: isAdmin,
+        delegationSuccess: delegationSuccess
       };
     } catch (error) {
       console.error('Error sending welcome tokens:', error);

@@ -125,3 +125,25 @@ Contributions are welcome! Please check the [issues](https://github.com/youruser
 ## License
 
 [MIT License](LICENSE)
+
+## Development Tools
+
+### User Reset Tool
+
+For testing purposes, you can reset all users in the database:
+
+```bash
+npm run reset-users
+```
+
+This script:
+- Deletes all users from the database
+- Clears the proposal cache
+- Lists wallet files that should be manually deleted
+
+**Important:** For security reasons, wallet files are NOT automatically deleted. The script will show you which files to delete manually.
+
+You can delete wallet files with:
+```bash
+rm wallets/*.json
+```
