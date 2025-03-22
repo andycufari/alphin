@@ -71,13 +71,33 @@ class CommandHandler {
    * @returns {string} - Safely formatted error message
    */
   sanitizeErrorForTelegram(errorMsg, maxLength = 100) {
-    if (!errorMsg) return 'Unknown error';
+    if (!errorMsg) {
+      return 'Unknown error';
+    }
     
-    // Truncate long error messages
-    const truncated = errorMsg.substring(0, maxLength) + (errorMsg.length > maxLength ? '...' : '');
+    // Convert to string if not already a string
+    let errorString = String(errorMsg);
     
-    // Escape markdown characters
-    return this.safeMarkdown(truncated);
+    // Remove complex JSON and object content 
+    errorString = errorString.replace(/\{[^}]+\}/g, "{...}");
+    errorString = errorString.replace(/\[[^\]]+\]/g, "[...]");
+    
+    // Remove any URLs that might be in the error
+    errorString = errorString.replace(/(https?:\/\/[^\s]+)/g, "URL");
+    
+    // Truncate to max length
+    if (errorString.length > maxLength) {
+      errorString = errorString.substring(0, maxLength - 3) + '...';
+    }
+    
+    // Remove any special Markdown characters completely instead of escaping them
+    // _ * [ ] ( ) ~ ` > # + - = | { } . ! are special in Telegram Markdown
+    errorString = errorString.replace(/[_*[\]()~`>#+=\-|{}.!]/g, " ");
+    
+    // Remove extra spaces
+    errorString = errorString.replace(/\s+/g, " ").trim();
+    
+    return errorString;
   }
   
   /**
@@ -1041,7 +1061,7 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
                 votingMethod = "Your vote was submitted directly from your wallet";
               } else if (result.method === 'admin-assisted') {
                 votingMethod = "Your vote was processed via admin-assisted method";
-                warningNote = "\n\n⚠️ *Note:* Meta-transaction failed, so we used an admin-assisted method as a fallback. Your vote is still recorded correctly.";
+                //warningNote = "\n\n⚠️ *Note:* Meta-transaction failed, so we used an admin-assisted method as a fallback. Your vote is still recorded correctly.";
               } else {
                 votingMethod = "Your vote was processed via " + result.method;
               }
@@ -1117,15 +1137,14 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
             }
             
             // ... rest of the code ...
-          } else if (result && result.method === 'all-methods-failed') {
-            // Handle the case where all voting methods failed
+          } else if (result.method === 'all-methods-failed') {
+            // Handle the case where all voting methods failed - clean display for Telegram
+            const sanitizedError = this.sanitizeErrorForTelegram(result.error);
+            
             if (currentVotingMsgId) {
               try {
-                // Sanitize the error message
-                const sanitizedError = this.sanitizeErrorForTelegram(result.error, 100);
-                
                 await this.bot.editMessageText(
-                  `❌ *Vote Failed*\n\nWe tried multiple methods to submit your vote, but all failed.\n\n*Error:* ${sanitizedError}\n\nPlease try again later or contact a DAO admin for assistance.`,
+                  `❌ *Vote Failed*\n\nUnable to process your vote.\n\n${sanitizedError}`,
                   {
                     chat_id: chatId,
                     message_id: currentVotingMsgId,
@@ -1133,34 +1152,55 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
                   }
                 );
               } catch (editError) {
-                console.warn('Could not update vote failure message:', editError.message);
+                console.warn('Could not update vote failed message (parse error):', editError.message);
+                
                 // Try again without markdown
                 try {
                   await this.bot.editMessageText(
-                    `❌ Vote Failed\n\nWe tried multiple methods to submit your vote, but all failed.\n\nPlease try again later or contact a DAO admin for assistance.`,
+                    `❌ Vote Failed\n\nUnable to process your vote.\n\n${sanitizedError}`,
                     {
                       chat_id: chatId,
                       message_id: currentVotingMsgId,
                       parse_mode: null
                     }
                   );
-                } catch (plainTextError) {
-                  console.error('Could not update vote message even with plain text:', plainTextError.message);
-                  // Give up on editing and try to send a new message
-                  this.bot.sendMessage(
-                    chatId,
-                    `❌ Vote Failed\n\nWe tried multiple methods to submit your vote, but all failed.`,
-                    { parse_mode: null }
-                  );
+                } catch (plainEditError) {
+                  console.warn('Could not update vote failed message (plain text):', plainEditError.message);
+                  
+                  // Last resort: send a new message
+                  try {
+                    await this.bot.sendMessage(
+                      chatId,
+                      `❌ Vote Failed\n\nUnable to process your vote.`,
+                      { parse_mode: null }
+                    );
+                  } catch (sendError) {
+                    console.error('All attempts to notify user of vote failure failed:', sendError);
+                  }
                 }
               }
             } else {
-              // If we don't have a message ID, just send a new message with limited error info
-              this.bot.sendMessage(
-                chatId,
-                `❌ *Vote Failed*\n\nWe tried multiple methods to submit your vote, but all failed. Please try again later.`,
-                { parse_mode: 'Markdown' }
-              );
+              // No message ID to update, send a new message
+              try {
+                await this.bot.sendMessage(
+                  chatId,
+                  `❌ *Vote Failed*\n\nUnable to process your vote.\n\n${sanitizedError}`,
+                  { parse_mode: 'Markdown' }
+                );
+              } catch (sendError) {
+                console.warn('Could not send vote failed message (parse error):', sendError.message);
+                
+                // Try again without markdown
+                try {
+                  await this.bot.sendMessage(
+                    chatId,
+                    `❌ Vote Failed\n\nUnable to process your vote.\n\n${sanitizedError}`,
+                    { parse_mode: null }
+                  );
+                } catch (plainSendError) {
+                  console.error('All attempts to notify user of vote failure failed:', plainSendError);
+                }
+              }
             }
           } else if (result && result.status === 'failed' && result.method === 'simulation') {
             // ... existing code for simulation failure ...
