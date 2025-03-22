@@ -67,13 +67,48 @@ bot.on('message', (msg) => {
   // Skip command messages
   if (msg.text && msg.text.startsWith('/')) return;
   
+  // Add debug logging for all messages
+  console.log(`[DEBUG] Received message in chat type: ${msg.chat.type}`);
+  console.log(`[DEBUG] Chat ID: ${msg.chat.id}`);
+  if (msg.text) console.log(`[DEBUG] Message text: "${msg.text}"`);
+  if (msg.from) console.log(`[DEBUG] From user: ${msg.from.id} (${msg.from.username || 'no username'})`);
+  
+  // Handle button text messages in private chats
+  if (msg.chat.type === 'private' && msg.text) {
+    const text = msg.text.trim();
+    
+    // Handle button menu options
+    if (text === '🔑 Join DAO') {
+      return commandHandler.handleJoinDAO(msg);
+    } else if (text === '📝 Create Proposal') {
+      return commandHandler.handleCreateProposal(msg);
+    } else if (text === '💰 Check Balance') {
+      return commandHandler.handleCheckBalance(msg);
+    } else if (text === '❓ Help') {
+      return commandHandler.handleHelp(msg);
+    } else if (text === '❓ What is a DAO?') {
+      return commandHandler.handleWhatIsDAO(msg);
+    } else if (text === '🏁 Back to Start') {
+      return commandHandler.handleStart(msg);
+    }
+  }
+  
   // Handle group mentions
   if (msg.chat.type !== 'private' && msg.text && (
-    msg.text.includes('@AlfinDAOBot') || 
-    (msg.reply_to_message && msg.reply_to_message.from.username === 'AlfinDAOBot')
+    msg.text.includes('@AlphinDAO_bot') || 
+    (msg.reply_to_message && msg.reply_to_message.from.username === 'AlphinDAO_bot')
   )) {
+    console.log('[DEBUG] Group mention condition matched, forwarding to processGroupMention');
     textProcessor.processGroupMention(msg, bot);
     return;
+  } else if (msg.chat.type !== 'private' && msg.text) {
+    console.log('[DEBUG] Message in group but NOT matched as mention');
+    if (msg.text.includes('@')) {
+      console.log(`[DEBUG] Contains @ symbol: ${msg.text}`);
+    }
+    if (msg.reply_to_message) {
+      console.log(`[DEBUG] Is reply to: ${JSON.stringify(msg.reply_to_message.from)}`);
+    }
   }
   
   // Process direct messages in private chat
@@ -95,7 +130,7 @@ bot.onText(/\/start vote_(.+)_(.+)/, (msg, match) => {
 });
 
 // Log startup with version info
-console.log(`Alfin DAO Bot v${process.env.npm_package_version || '1.0.0'} is running...`);
+console.log(`Alphin DAO Bot v${process.env.npm_package_version || '1.0.0'} is running...`);
 console.log(`Connected to blockchain network: ${process.env.BLOCKCHAIN_NETWORK || 'Unknown'}`);
 
 // Handle graceful shutdown

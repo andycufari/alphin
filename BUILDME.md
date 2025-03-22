@@ -1,10 +1,10 @@
-# Alfin DAO Agent - Technical Documentation
+# Alphin DAO Agent - Technical Documentation
 
-This document provides technical details about the Alfin DAO Agent implementation, architecture, and current development status.
+This document provides technical details about the Alphin DAO Agent implementation, architecture, and current development status.
 
 ## Architecture Overview
 
-Alfin is built with a modular architecture where each component handles a specific aspect of the system:
+Alphin is built with a modular architecture where each component handles a specific aspect of the system:
 
 ```
 src/

@@ -18,45 +18,54 @@ class BlockchainService {
   constructor(config) {
     const { rpcUrl, tokenAddress, governorAddress, adminPrivateKey } = config;
     
+    // Check if blockchain features should be enabled
+    this.blockchainEnabled = !!(rpcUrl && tokenAddress && governorAddress && adminPrivateKey &&
+                               adminPrivateKey !== 'your_admin_wallet_private_key');
+    
+    if (!this.blockchainEnabled) {
+      console.log('Blockchain features are disabled - some or all required blockchain configuration is missing');
+      return;
+    }
+    
     // Save addresses and configure provider
-    this.provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-    this.tokenAddress = tokenAddress;
-    this.governorAddress = governorAddress;
-    this.adminWallet = new ethers.Wallet(adminPrivateKey, this.provider);
-    
-    // Validate required configuration
-    if (!rpcUrl) throw new Error('RPC URL is required');
-    if (!tokenAddress) throw new Error('Token address is required');
-    if (!governorAddress) throw new Error('Governor address is required');
-    
-    console.log(`Initializing Alfin blockchain service...`);
-    
-    // Load ABIs from JSON files
     try {
-      const tokenABIPath = path.join(__dirname, '../../../contracts/abis/ERC20VotesToken.json');
-      const governorABIPath = path.join(__dirname, '../../../contracts/abis/Governor.json');
+      this.provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+      this.tokenAddress = tokenAddress;
+      this.governorAddress = governorAddress;
+      this.adminWallet = new ethers.Wallet(adminPrivateKey, this.provider);
       
-      // Load ABIs
-      const tokenABI = require(tokenABIPath);
-      const governorABI = require(governorABIPath);
+      console.log(`Initializing Alphin blockchain service...`);
       
-      // Initialize contracts
-      this.tokenContract = new ethers.Contract(
-        this.tokenAddress,
-        tokenABI,
-        this.adminWallet
-      );
-      
-      this.governorContract = new ethers.Contract(
-        this.governorAddress,
-        governorABI,
-        this.adminWallet
-      );
-      
-      console.log(`BlockchainService initialized with token ${this.tokenAddress} and governor ${this.governorAddress}`);
+      // Load ABIs from JSON files
+      try {
+        const tokenABIPath = path.join(__dirname, '../../../contracts/abis/ERC20VotesToken.json');
+        const governorABIPath = path.join(__dirname, '../../../contracts/abis/Governor.json');
+        
+        // Load ABIs
+        const tokenABI = require(tokenABIPath);
+        const governorABI = require(governorABIPath);
+        
+        // Initialize contracts
+        this.tokenContract = new ethers.Contract(
+          this.tokenAddress,
+          tokenABI,
+          this.adminWallet
+        );
+        
+        this.governorContract = new ethers.Contract(
+          this.governorAddress,
+          governorABI,
+          this.adminWallet
+        );
+        
+        console.log(`BlockchainService initialized with token ${this.tokenAddress} and governor ${this.governorAddress}`);
+      } catch (error) {
+        console.error("Error initializing contracts:", error);
+        this.blockchainEnabled = false;
+      }
     } catch (error) {
-      console.error("Error initializing contracts:", error);
-      throw new Error(`Failed to initialize contracts: ${error.message}`);
+      console.error("Error initializing blockchain service:", error);
+      this.blockchainEnabled = false;
     }
   }
 
@@ -67,6 +76,10 @@ class BlockchainService {
    * @returns {Promise<Object>} - Transaction details
    */
   async transferTokens(toAddress, amount) {
+    if (!this.blockchainEnabled) {
+      return { status: 'error', message: 'Blockchain features are disabled' };
+    }
+    
     console.log(`Transferring ${amount} tokens to ${toAddress}`);
     
     try {
@@ -111,6 +124,10 @@ class BlockchainService {
    * @returns {Promise<Object>} - Transaction details
    */
   async delegateVotes(delegatorAddress, delegateeAddress) {
+    if (!this.blockchainEnabled) {
+      return { status: 'error', message: 'Blockchain features are disabled' };
+    }
+    
     console.log(`Delegating votes from ${delegatorAddress} to ${delegateeAddress}`);
     
     try {
@@ -158,6 +175,10 @@ class BlockchainService {
    * @returns {Promise<string>} - Token balance as formatted string
    */
   async getTokenBalance(address) {
+    if (!this.blockchainEnabled) {
+      return "0.0"; // Return zero balance if blockchain is disabled
+    }
+    
     try {
       const balance = await this.tokenContract.balanceOf(address);
       const decimals = await this.tokenContract.decimals();
@@ -179,6 +200,14 @@ class BlockchainService {
    * @returns {Promise<Object>} - Proposal creation result
    */
   async createProposal(proposal) {
+    if (!this.blockchainEnabled) {
+      return { 
+        status: 'error', 
+        message: 'Blockchain features are disabled',
+        proposalId: `mock-${Date.now()}`
+      };
+    }
+    
     const { title, description, targets, values, calldatas } = proposal;
     console.log(`Creating proposal: ${title}`);
     
@@ -242,57 +271,27 @@ class BlockchainService {
   
   /**
    * Cast a vote on a proposal
-   * @param {ethers.Wallet} userWallet - User's wallet
+   * @param {string} voterAddress - Address of the voter
    * @param {string} proposalId - ID of the proposal
    * @param {number} support - Vote type (0=against, 1=for, 2=abstain)
-   * @returns {Promise<Object>} - Voting result
+   * @param {string} reason - Optional reason for the vote
+   * @returns {Promise<Object>} - Transaction receipt
    */
-  async voteOnProposal(userWallet, proposalId, support) {
-    console.log(`Voting on proposal ${proposalId} with support ${support}`);
-    
+  async castVote(voterAddress, proposalId, support, reason = '') {
     try {
-      // Check proposal state
-      const state = await this.governorContract.state(proposalId);
+      const wallet = new ethers.Wallet(this.getPrivateKey(voterAddress), this.provider);
+      const governor = this.governorContract.connect(wallet);
       
-      // State 1 is Active in OpenZeppelin Governor
-      if (state !== 1) {
-        const states = ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed'];
-        throw new Error(`Proposal is not active for voting. Current state: ${states[state]}`);
-      }
-      
-      // Check voting power
-      const blockNumber = await this.provider.getBlockNumber();
-      const votingPower = await this.governorContract.getVotes(userWallet.address, blockNumber - 1);
-      
-      if (votingPower.isZero()) {
-        throw new Error('No voting power. Make sure you have delegated your tokens.');
-      }
-      
-      // Connect the governor contract to user's wallet
-      const governorWithSigner = this.governorContract.connect(userWallet);
-      
-      // Cast vote with reason
-      const tx = await governorWithSigner.castVoteWithReason(
-        proposalId, 
+      const tx = await governor.castVoteWithReason(
+        proposalId,
         support,
-        `Vote cast via Alfin DAO Bot`,
-        { gasLimit: 200000 }
+        reason || `Vote cast via Alphin DAO Bot`
       );
       
-      console.log(`Vote transaction sent: ${tx.hash}`);
-      
-      // Wait for confirmation
-      const receipt = await tx.wait();
-      
-      return {
-        success: true,
-        txHash: receipt.transactionHash,
-        blockNumber: receipt.blockNumber,
-        support: support === 0 ? 'Against' : support === 1 ? 'For' : 'Abstain'
-      };
+      return await tx.wait();
     } catch (error) {
-      console.error('Error voting on proposal:', error);
-      throw new Error(`Failed to vote on proposal: ${error.message}`);
+      console.error(`Error casting vote:`, error);
+      throw new Error('Failed to cast vote. Please try again later.');
     }
   }
   
@@ -302,6 +301,18 @@ class BlockchainService {
    * @returns {Promise<Object>} - Proposal information
    */
   async getProposalInfo(proposalId) {
+    if (!this.blockchainEnabled) {
+      return {
+        id: proposalId,
+        title: "Mock Proposal (Blockchain Disabled)",
+        description: "This is a mock proposal because blockchain features are disabled.",
+        status: "active",
+        forVotes: "0",
+        againstVotes: "0",
+        abstainVotes: "0"
+      };
+    }
+    
     try {
       // Get proposal state
       const state = await this.governorContract.state(proposalId);
@@ -338,9 +349,22 @@ class BlockchainService {
   
   /**
    * Get active proposals
-   * @returns {Promise<Array>} - List of active proposals
+   * @returns {Promise<Array<Object>>} - List of active proposals
    */
   async getActiveProposals() {
+    if (!this.blockchainEnabled) {
+      return [{
+        id: `mock-${Date.now()}`,
+        title: "Mock Proposal (Blockchain Disabled)",
+        description: "This is a mock proposal because blockchain features are disabled.",
+        status: "active",
+        proposer: "0x0000000000000000000000000000000000000000",
+        forVotes: "0",
+        againstVotes: "0",
+        abstainVotes: "0"
+      }];
+    }
+    
     try {
       // Get the current block number
       const currentBlock = await this.provider.getBlockNumber();

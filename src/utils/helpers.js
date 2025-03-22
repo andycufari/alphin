@@ -1,5 +1,5 @@
 /**
- * Utility functions for the Alfin DAO bot
+ * Utility functions for the Alphin DAO bot
  */
 
 /**

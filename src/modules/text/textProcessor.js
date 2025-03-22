@@ -63,7 +63,7 @@ class TextProcessor {
       bot.sendMessage(chatId, response);
     } catch (error) {
       console.error('Error processing message with AI:', error);
-      bot.sendMessage(chatId, 'Sorry, I\'m having trouble processing your message right now. Please try again later.');
+      bot.sendMessage(chatId, 'Sorry, I\'m having trouble processing your message right now. Please try again with Alphin DAO assistant later.');
     }
   }
   
@@ -77,17 +77,21 @@ class TextProcessor {
     let messageText = msg.text;
     
     // Remove bot username from message
-    if (messageText.includes('@AlfinDAOBot')) {
-      messageText = messageText.replace('@AlfinDAOBot', '').trim();
+    if (messageText.includes('@AlphinDAO_bot')) {
+      messageText = messageText.replace('@AlphinDAO_bot', '').trim();
     }
     
-    console.log(`Processing group mention: ${messageText}`);
+    console.log(`[DEBUG] Processing group mention in chatId: ${chatId}`);
+    console.log(`[DEBUG] Message text: "${messageText}"`);
+    console.log(`[DEBUG] Full message object: ${JSON.stringify(msg, null, 2)}`);
+    console.log(`[DEBUG] Community group ID from env: ${process.env.COMMUNITY_GROUP_ID}`);
     
     // Get information about current DAO state to provide as context
-    const groupContext = `This is a DAO community group. Users can interact with the DAO through the bot in private chat.`;
+    const groupContext = `This is the Alphin DAO community group. Users can interact with the Alphin DAO through private chat with the bot. The bot helps users join the DAO, create proposals, vote, and earn tokens for participation.`;
     
     try {
       const response = await this.ai.processGroupMention(messageText, groupContext);
+      console.log(`[DEBUG] AI response: "${response}"`);
       bot.sendMessage(chatId, response, { reply_to_message_id: msg.message_id });
     } catch (error) {
       console.error('Error processing group mention with AI:', error);
@@ -125,7 +129,7 @@ class TextProcessor {
         bot.sendMessage(chatId, `Error: ${error.message}`);
       }
     } else {
-      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over.');
+      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over with your Alphin DAO request.');
     }
     
     // Reset state
@@ -148,7 +152,7 @@ class TextProcessor {
     
     bot.sendMessage(
       chatId, 
-      `Got it! The title of your proposal is: "${title}"\n\nNow, please provide a detailed description of your proposal.`
+      `Great! Your Alphin DAO proposal title is: "${title}"\n\nNow, please provide a detailed description of your proposal.`
     );
   }
   
@@ -168,7 +172,7 @@ class TextProcessor {
     
     const message = await bot.sendMessage(
       chatId, 
-      `Thank you! Your proposal is ready to be submitted:\n\nTitle: ${state.proposalTitle}\n\nDescription: ${description.substring(0, 100)}${description.length > 100 ? '...' : ''}\n\nPlease enter your PIN to confirm and submit this proposal.`,
+      `Thank you! Your Alphin DAO proposal is ready to be submitted:\n\nTitle: ${state.proposalTitle}\n\nDescription: ${description.substring(0, 100)}${description.length > 100 ? '...' : ''}\n\nPlease enter your PIN to confirm and submit this proposal.`,
       { reply_markup: { force_reply: true } }
     );
     
@@ -200,10 +204,10 @@ class TextProcessor {
         await state.callback(pin, state.proposalTitle, state.proposalDescription);
       } catch (error) {
         console.error('Error in proposal submission:', error);
-        bot.sendMessage(chatId, `Error submitting proposal: ${error.message}`);
+        bot.sendMessage(chatId, `Error submitting your Alphin DAO proposal: ${error.message}`);
       }
     } else {
-      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over.');
+      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over with your Alphin DAO proposal.');
     }
     
     // Reset state
@@ -233,10 +237,10 @@ class TextProcessor {
         await state.callback(pin);
       } catch (error) {
         console.error('Error in vote submission:', error);
-        bot.sendMessage(chatId, `Error casting vote: ${error.message}`);
+        bot.sendMessage(chatId, `Error casting your Alphin DAO vote: ${error.message}`);
       }
     } else {
-      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over.');
+      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over with your Alphin DAO voting process.');
     }
     
     // Reset state
