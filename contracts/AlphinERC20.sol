@@ -1,4 +1,4 @@
-// contracts/CATToken.sol
+// TOKEN GOVERNOR FOR THE CRECIMIENTO HACKATON MARCH25
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
