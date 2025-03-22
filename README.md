@@ -1,162 +1,63 @@
-# Alphin - Telegram DAO AI Agent
+# Alfin DAO Bot
 
-Alphin is an AI-powered Telegram bot that makes DAO participation simple and accessible directly from Telegram, removing blockchain complexity while enabling full governance participation.
-
-## What is Alphin?
-
-Alphin makes DAOs accessible to everyone by handling all the complex blockchain interactions behind the scenes. Users can join, vote, and create proposals directly in Telegram without worrying about gas fees, private keys, or blockchain technicalities.
-
-### Problem Solved
-
-DAOs face significant adoption barriers:
-- Complex blockchain interactions
-- Need to manage wallets and private keys
-- Gas fees for every transaction
-- Technical knowledge requirements
-
-Alphin removes these barriers completely by providing:
-- Simple chat-based interface
-- Bot-managed wallets secured with PINs
-- Gas fees covered by the DAO
-- AI assistance for governance questions
+Alfin is a Telegram bot that makes blockchain DAOs accessible to web2 users by abstracting away the complexity of interacting with governance contracts.
 
 ## Features
 
-- **One-Click Onboarding**: Users join with a simple command and PIN setup
-- **Secure Wallet Management**: PIN-encrypted wallets for each user
-- **Gasless Transactions**: The bot covers all transaction fees
-- **Proposal Creation**: Create governance proposals with simple text commands
-- **Voting**: Vote directly from group announcements
-- **AI Assistant**: Get help and information about the DAO through natural conversation
-- **Participation Rewards**: Earn tokens for voting and creating proposals
+- AI integration with OpenAI API
+- Blockchain service for OpenZeppelin governance contracts
+- Secure wallet management with PIN-encryption
+- Telegram bot command handling
+- Conversation flow management
+- Participation rewards system
+- User vote tracking
+- Proposal status monitoring
+- Automatic notifications for governance events
 
-## User Guide
+## Recent Improvements
 
-### Getting Started
+- Added a `user_votes` table in the SQLite database to track user votes
+- Enhanced the proposal cache to store more detailed information
+- Implemented automatic proposal status monitoring
+- Added close vote alerts for proposals with narrow margins
+- Improved error handling throughout the application
+- Added user interface to show previous votes
 
-1. **Find the bot**: Search for `@AlphinDAOBot` in Telegram or click [this link](https://t.me/AlphinDAOBot)
-2. **Start a chat**: Send `/start` to begin
-3. **Join the DAO**: 
-   - Send `/join` or press the "Join DAO" button
-   - Create a PIN when prompted (4-8 digits)
-   - Receive welcome tokens automatically
+## Getting Started
 
-### Participating in Governance
+1. Install dependencies:
+```
+npm install
+```
 
-#### Voting on Proposals
-1. When a proposal is announced in the community group, click one of the voting buttons (Yes/No/Abstain)
-2. You'll be redirected to a private chat with the bot
-3. Confirm your vote with your PIN
-4. Receive tokens as a reward for voting
+2. Configure environment variables in a `.env` file:
+```
+BOT_TOKEN=your_telegram_bot_token
+OPENAI_API_KEY=your_openai_api_key
+BLOCKCHAIN_RPC_URL=your_rpc_endpoint
+TOKEN_ADDRESS=your_token_contract_address
+GOVERNOR_ADDRESS=your_governor_contract_address
+ADMIN_PRIVATE_KEY=your_admin_wallet_private_key
+COMMUNITY_GROUP_ID=your_telegram_group_id
+BLOCKCHAIN_NETWORK=sepolia
+PROPOSAL_MONITOR_INTERVAL=300000
+```
 
-#### Creating Proposals
-1. In a private chat with the bot, send `/proposal` or press the "Create Proposal" button
-2. Enter a title for your proposal when prompted
-3. Provide a detailed description of your proposal
-4. Confirm with your PIN
-5. Your proposal will be announced in the community group for voting
+3. Start the bot:
+```
+npm start
+```
 
-#### Checking Your Balance
-1. Send `/balance` or press the "Check Balance" button in a private chat with the bot
-2. View your token balance and wallet address
-3. (Optional) View on blockchain explorer with the provided link
+## Architecture
 
-### Getting Help
-
-1. Send `/help` or press the "Help" button
-2. Select a topic to learn more about:
-   - What is a DAO?
-   - How to Vote
-   - Creating Proposals
-   - Tokens & Rewards
-   - PIN Security
-
-Or simply ask questions in natural language, and the AI will provide answers.
-
-## Setting Up Your Own Instance
-
-### Prerequisites
-
-- Node.js 16+
-- Telegram Bot Token (from BotFather)
-- OpenAI API Key
-- Ethereum/EVM RPC Endpoint
-- Deployed Governance Contracts:
-  - ERC20Votes Token
-  - Governor Contract
-
-### Installation
-
-1. Clone the repository
-   ```bash
-   git clone https://github.com/yourusername/Alphin-dao-bot.git
-   cd Alphin-dao-bot
-   ```
-
-2. Install dependencies
-   ```bash
-   npm install
-   ```
-
-3. Configure environment variables
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
-
-4. Start the bot
-   ```bash
-   npm start
-   ```
-
-See [BUILDME.md](BUILDME.md) for detailed technical documentation.
-
-## Security Notes
-
-- PINs are never stored, only used to encrypt/decrypt wallets
-- Private keys never leave the server
-- All sensitive actions occur in private chats
-- PIN messages are deleted after processing
-
-## Contributing
-
-Contributions are welcome! Please check the [issues](https://github.com/yourusername/Alphin-dao-bot/issues) for areas where you can help.
+The bot follows a modular architecture:
+- `src/index.js`: Main entry point
+- `src/modules/blockchain/`: Blockchain integration services
+- `src/modules/commands/`: Telegram command handlers
+- `src/modules/wallets/`: Wallet management
+- `src/modules/database/`: Database services
+- `src/modules/ai/`: AI integration services
 
 ## License
 
-[MIT License](LICENSE)
-
-## Development Tools
-
-### User Reset Tool
-
-For testing purposes, you can reset all users in the database:
-
-```bash
-npm run reset-users
-```
-
-This script:
-- Deletes all users from the database
-- Clears the proposal cache
-- Lists wallet files that should be manually deleted
-
-**Important:** For security reasons, wallet files are NOT automatically deleted. The script will show you which files to delete manually.
-
-You can delete wallet files with:
-```bash
-rm wallets/*.json
-```
-
-## Technical Details
-
-### Token Delegation
-
-For the governance to work properly, tokens must be delegated to enable voting power. Alphin handles this automatically:
-
-1. When a user joins, their tokens are automatically delegated to themselves
-2. The DAO admin wallet pays for all gas fees (transactions)
-3. The smart contract uses a special `adminDelegateFor` function that allows secure delegation by admin
-4. If the token contract doesn't have this function, the bot falls back to standard delegation methods
-
-This architecture ensures users never need to pay gas fees or handle complex delegation processes.
+MIT

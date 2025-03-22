@@ -10,6 +10,8 @@ const WalletManager = require('./modules/wallets/walletManager');
 const CommandHandler = require('./modules/commands/commandHandler');
 const TextProcessor = require('./modules/text/textProcessor');
 const GamificationService = require('./modules/gamification/gamificationService');
+const DatabaseService = require('./modules/database/databaseService');
+const ProposalMonitor = require('./modules/blockchain/proposalMonitor');
 const helpers = require('./utils/helpers');
 
 // Initialize the bot
@@ -42,7 +44,27 @@ db.serialize(() => {
   // Create proposal cache table
   db.run(`CREATE TABLE IF NOT EXISTS proposal_cache (
     proposal_id TEXT PRIMARY KEY,
-    last_updated INTEGER NOT NULL
+    title TEXT,
+    description TEXT,
+    proposer TEXT,
+    state TEXT,
+    start_block INTEGER,
+    end_block INTEGER,
+    for_votes TEXT,
+    against_votes TEXT,
+    abstain_votes TEXT,
+    last_updated INTEGER NOT NULL,
+    is_executed INTEGER DEFAULT 0
+  )`);
+  
+  // Create user votes tracking table
+  db.run(`CREATE TABLE IF NOT EXISTS user_votes (
+    telegram_id TEXT,
+    proposal_id TEXT,
+    vote_type INTEGER, /* 0=against, 1=for, 2=abstain */
+    vote_timestamp INTEGER NOT NULL,
+    tx_hash TEXT,
+    PRIMARY KEY (telegram_id, proposal_id)
   )`);
 });
 
@@ -63,7 +85,14 @@ const blockchainManager = new BlockchainManager({
 });
 const walletManager = new WalletManager();
 const textProcessor = new TextProcessor(aiService);
+const databaseService = new DatabaseService('./dao_bot.sqlite');
 const gamificationService = new GamificationService(blockchainManager);
+const proposalMonitor = new ProposalMonitor(
+  blockchainManager,
+  databaseService,
+  bot,
+  process.env.COMMUNITY_GROUP_ID
+);
 
 // Initialize command handler
 const commandHandler = new CommandHandler(
@@ -73,6 +102,7 @@ const commandHandler = new CommandHandler(
   aiService,
   textProcessor,
   gamificationService,
+  databaseService,
   process.env.COMMUNITY_GROUP_ID
 );
 
@@ -155,12 +185,19 @@ bot.onText(/\/start vote_(.+)_(.+)/, (msg, match) => {
   }
 });
 
+// Start proposal monitoring
+const monitoringInterval = process.env.PROPOSAL_MONITOR_INTERVAL || 300000; // 5 minutes default
+proposalMonitor.startMonitoring(parseInt(monitoringInterval));
+
 // Log startup with version info
 console.log(`Alphin DAO Bot v${process.env.npm_package_version || '1.0.0'} is running...`);
 console.log(`Connected to blockchain network: ${process.env.BLOCKCHAIN_NETWORK || 'Unknown'}`);
+console.log(`Proposal monitoring started with interval: ${monitoringInterval}ms`);
 
 // Handle graceful shutdown
 process.on('SIGINT', () => {
+  console.log('Stopping proposal monitor...');
+  proposalMonitor.stopMonitoring();
   console.log('Closing database connection...');
   db.close();
   console.log('Stopping bot...');

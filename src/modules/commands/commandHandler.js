@@ -19,6 +19,7 @@ class CommandHandler {
     aiService,
     textProcessor,
     gamificationService,
+    databaseService,
     communityGroupId
   ) {
     this.bot = bot;
@@ -27,6 +28,7 @@ class CommandHandler {
     this.ai = aiService;
     this.textProcessor = textProcessor;
     this.gamification = gamificationService;
+    this.db = databaseService;
     this.communityGroupId = communityGroupId;
     
     this.registerCommands();
@@ -42,6 +44,7 @@ class CommandHandler {
       { command: 'join', description: '🔑 Join the DAO' },
       { command: 'balance', description: '💰 Check your token balance' },
       { command: 'proposal', description: '📝 Create a new proposal' },
+      { command: 'proposals', description: '🗳️ View active proposals' },
       { command: 'help', description: '❓ Get help' },
       { command: 'whatisdao', description: '🏛️ Learn about DAOs' }
     ], { scope: { type: 'all_private_chats' } });
@@ -49,19 +52,37 @@ class CommandHandler {
     // Limited commands for groups - only help and whatisdao
     this.bot.setMyCommands([
       { command: 'help', description: '❓ Get help with Alphin DAO' },
-      { command: 'whatisdao', description: '🏛️ Learn about Alphin DAO' }
+      { command: 'whatisdao', description: '🏛️ Learn about Alphin DAO' },
+      { command: 'proposals', description: '🗳️ View active proposals' }
     ], { scope: { type: 'all_group_chats' } });
     
     // Command handlers
     this.bot.onText(/\/start/, this.handleStart.bind(this));
     this.bot.onText(/\/join/, this.handleJoinDAO.bind(this));
     this.bot.onText(/\/proposal/, this.handleCreateProposal.bind(this));
+    this.bot.onText(/\/proposals/, this.handleListProposals.bind(this));
     this.bot.onText(/\/balance/, this.handleCheckBalance.bind(this));
     this.bot.onText(/\/help/, this.handleHelp.bind(this));
     this.bot.onText(/\/whatisdao/, this.handleWhatIsDAO.bind(this));
     
     // Handle button callbacks
     this.bot.on('callback_query', this.handleCallbackQuery.bind(this));
+    
+    // Admin commands
+    this.bot.onText(/\/execute(?:\s+([a-zA-Z0-9]+))?/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      const proposalId = match[1];
+      
+      if (!proposalId) {
+        return this.bot.sendMessage(
+          chatId,
+          'Please provide a proposal ID to execute. Usage: /execute [proposalId]'
+        );
+      }
+      
+      await this.handleExecuteProposal(chatId, userId, proposalId);
+    });
   }
   
   /**
@@ -74,11 +95,16 @@ class CommandHandler {
     const isPrivateChat = msg.chat.type === 'private';
     
     // Determine if this is a deep link with parameters
-    const match = msg.text.match(/\/start vote_(.+)_(.+)/);
-    if (match) {
-      const proposalId = match[1];
-      const voteType = match[2];
-      return this.handleVoteAction(chatId, userId, proposalId, voteType);
+    if (msg.text.includes('start vote_')) {
+      const match = msg.text.match(/\/start vote_(.+)_(.+)/);
+      if (match) {
+        const proposalId = match[1];
+        const voteType = match[2];
+        return this.handleVoteAction(chatId, userId, proposalId, voteType);
+      }
+    } else if (msg.text.includes('start=proposals')) {
+      // Special deep link to show active proposals
+      return this.handleListProposals(msg);
     }
     
     // In group chats, provide a simple informational message
@@ -98,13 +124,14 @@ class CommandHandler {
     
     if (isMember) {
       // Message for existing members
-      welcomeMessage += `What would you like to do today?\n\n• 📝 Create new proposals\n• 💰 Check your token balance\n• ❓ Get help with DAO functions`;
+      welcomeMessage += `What would you like to do today?\n\n• 📝 Create new proposals\n• 🗳️ View and vote on proposals\n• 💰 Check your token balance\n• ❓ Get help with DAO functions`;
       
       keyboard = {
-        reply_markup: {
-          keyboard: [
-            [{ text: '📝 Create Proposal' }, { text: '💰 Check Balance' }],
-            [{ text: '❓ Help' }, { text: '🏁 Back to Start' }]
+      reply_markup: {
+        keyboard: [
+            [{ text: '📝 Create Proposal' }, { text: '🗳️ View Proposals' }],
+            [{ text: '💰 Check Balance' }, { text: '❓ Help' }],
+            [{ text: '🏁 Back to Start' }]
           ],
           resize_keyboard: true
         }
@@ -171,11 +198,38 @@ class CommandHandler {
       // Setup awaiting PIN state
       this.textProcessor.setupAwaitingPin(userId, async (pin) => {
         try {
+          // Send initial status message
+          const statusMsg = await this.bot.sendMessage(
+            chatId,
+            '🔄 *Processing your request*\n\nStatus: Creating your wallet...',
+            { parse_mode: 'Markdown' }
+          );
+          
           // Create wallet for user
           const address = await this.wallets.createWallet(userId, pin);
           
+          // Update status message - wallet created
+          await this.bot.editMessageText(
+            '🔄 *Processing your request*\n\nStatus: Wallet created ✅\nStatus: Sending tokens to your wallet...',
+            { 
+              chat_id: chatId, 
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
+          
           // Send welcome tokens - pass userId to check if admin
           const result = await this.blockchain.sendWelcomeTokens(address, userId);
+          
+          // Update status message - tokens sent
+          await this.bot.editMessageText(
+            '🔄 *Processing your request*\n\nStatus: Wallet created ✅\nStatus: Tokens sent ✅\nStatus: Setting up voting rights...',
+            { 
+              chat_id: chatId, 
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
           
           // Get blockchain explorer URL based on network
           const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
@@ -184,16 +238,46 @@ class CommandHandler {
           
           // Add delegation note if it failed
           let delegationNote = '';
+          let delegationStatus = 'Voting rights activated ✅';
+          
           if (!result.delegationSuccess) {
+            delegationStatus = 'Voting rights setup failed ❌';
             delegationNote = '\n\n⚠️ *Note:* Token delegation failed. You may need to manually delegate your tokens to vote on proposals. This is usually a temporary issue with the blockchain network.';
+          }
+          
+          // Final status update - all done
+          await this.bot.editMessageText(
+            `🔄 *Processing your request*\n\nStatus: Wallet created ✅\nStatus: Tokens sent ✅\nStatus: ${delegationStatus}`,
+            { 
+              chat_id: chatId, 
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
+          
+          // Format token amount with commas
+          const formattedAmount = Number(result.amount).toLocaleString();
+          
+          // Determine token visual based on amount
+          let tokenVisual = '';
+          const tokenAmount = parseFloat(result.amount);
+          
+          if (tokenAmount < 100) {
+            tokenVisual = '🥉'; // Bronze for small balance
+          } else if (tokenAmount < 1000) {
+            tokenVisual = '🥈'; // Silver for medium balance
+          } else if (tokenAmount < 10000) {
+            tokenVisual = '🥇'; // Gold for large balance
+          } else {
+            tokenVisual = '👑'; // Crown for very large balance
           }
           
           // Customize message based on admin status
           let welcomeMessage;
           if (result.isAdmin) {
-            welcomeMessage = `Welcome to the DAO, Admin! 🎉\n\nYour wallet has been created and ${result.amount} admin tokens have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals and create new ones right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
+            welcomeMessage = `${tokenVisual} *Welcome to the DAO, Admin!* 🎉\n\nYour wallet has been created and *${formattedAmount} admin tokens* have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals and create new ones right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
           } else {
-            welcomeMessage = `Welcome to the DAO! 🎉\n\nYour wallet has been created and ${result.amount} tokens have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
+            welcomeMessage = `${tokenVisual} *Welcome to the DAO!* 🎉\n\nYour wallet has been created and *${formattedAmount} tokens* have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
           }
           
           this.bot.sendMessage(
@@ -214,8 +298,9 @@ class CommandHandler {
             
             try {
               await this.bot.sendMessage(
-                this.communityGroupId,
-                `🎉 Welcome to Alphin DAO! ${usernameDisplay} has just joined our community${roleMessage}.\n\nThey received ${result.amount} governance tokens and can now participate in proposals and voting.\n\nLet's give them a warm welcome! 👋`
+              this.communityGroupId,
+                `🌟 *New Member Alert!*\n\n${tokenVisual} ${usernameDisplay} has joined Alphin DAO${roleMessage}!\n\n💰 *${formattedAmount} tokens* have been granted\n\nThey can now participate in proposals and voting.\n\n*Let's give them a warm welcome!* 👋`,
+                { parse_mode: 'Markdown' }
               );
             } catch (groupError) {
               console.log(`Failed to send message to community group: ${groupError.message}`);
@@ -229,7 +314,8 @@ class CommandHandler {
                     console.log(`Group migrated to supergroup with ID: ${migrationInfo.migrate_to_chat_id}`);
                     await this.bot.sendMessage(
                       migrationInfo.migrate_to_chat_id,
-                      `🎉 Welcome to Alphin DAO! ${usernameDisplay} has just joined our community${roleMessage}.\n\nThey received ${result.amount} governance tokens and can now participate in proposals and voting.\n\nLet's give them a warm welcome! 👋`
+                      `🌟 *New Member Alert!*\n\n${tokenVisual} ${usernameDisplay} has joined Alphin DAO${roleMessage}!\n\n💰 *${formattedAmount} tokens* have been granted\n\nThey can now participate in proposals and voting.\n\n*Let's give them a warm welcome!* 👋`,
+                      { parse_mode: 'Markdown' }
                     );
                   }
                 } catch (innerError) {
@@ -303,59 +389,21 @@ class CommandHandler {
       
       // Setup proposal creation state
       this.textProcessor.setupCreatingProposal(userId, async (pin, title, description) => {
-        try {
-          // Get user's wallet
-          const userWallet = await this.wallets.decryptWallet(userId, pin);
-          
-          // Create the proposal
-          const proposal = {
-            title: title,
-            description: description
-          };
-          
-          const result = await this.blockchain.createProposal(proposal, userWallet);
-          
-          // Reward user for creating proposal
-          await this.gamification.rewardForProposal(address);
-          
-          // Announce proposal in community group
-          if (this.communityGroupId) {
-            const inlineKeyboard = {
-              inline_keyboard: [
-                [
-                  { text: 'Vote Yes', callback_data: `vote_${result.proposalId}_1` },
-                  { text: 'Vote No', callback_data: `vote_${result.proposalId}_0` },
-                  { text: 'Abstain', callback_data: `vote_${result.proposalId}_2` }
-                ]
-              ]
-            };
-            
-            this.bot.sendMessage(
-              this.communityGroupId,
-              `📢 *New Governance Proposal*\n\nSubmitted by: ${msg.from.username ? `@${msg.from.username}` : 'a DAO member'}\n\n*${title}*\n\n${description.substring(0, 200)}${description.length > 200 ? '...' : ''}\n\n🗳️ *Voting is now open!* Your vote matters in shaping the future of Alphin DAO.\n\nSelect an option below to cast your vote:`,
-              { 
-                parse_mode: 'Markdown',
-                reply_markup: inlineKeyboard
-              }
-            );
-          }
-          
-          // Notify user
-          this.bot.sendMessage(
-            chatId,
-            `Your proposal has been created successfully! 🎉\n\nProposal ID: \`${result.proposalId}\`\nTransaction: \`${result.txHash}\`\n\nYou've earned tokens as a reward for your contribution!\n\nYour proposal has been announced in the community group. Members can now vote on it.`,
-            { parse_mode: 'Markdown' }
-          );
-          
-        } catch (error) {
-          console.error('Error creating proposal:', error);
-          this.bot.sendMessage(chatId, `Error creating proposal: ${error.message}`);
-        }
+        // Store the user info for use in the proposal announcement
+        const userInfo = {
+          username: msg.from.username,
+          first_name: msg.from.first_name,
+          last_name: msg.from.last_name,
+          id: msg.from.id
+        };
+        
+        // Call the method that handles the proposal creation with status updates
+        await this.createProposalWithStatus(chatId, userId, pin, title, description, userInfo);
       });
       
     } catch (error) {
-      console.error('Error in handleCreateProposal:', error);
-      this.bot.sendMessage(chatId, `Something went wrong: ${error.message}`);
+      console.error('Error starting proposal creation:', error);
+      this.bot.sendMessage(chatId, `Error starting proposal creation: ${error.message}`);
     }
   }
   
@@ -383,17 +431,79 @@ class CommandHandler {
         );
       }
       
+      // Show loading message
+      const statusMsg = await this.bot.sendMessage(
+        chatId,
+        '🔄 *Checking your balance...*',
+        { parse_mode: 'Markdown' }
+      );
+      
       // Get user's wallet address and token balance
       const address = await this.wallets.getWalletAddress(userId);
+      
+      // Update status message
+      await this.bot.editMessageText(
+        '🔄 *Checking your balance...*\n\nRetrieved wallet address ✅\nFetching token balance...',
+        { 
+          chat_id: chatId, 
+          message_id: statusMsg.message_id,
+          parse_mode: 'Markdown'
+        }
+      );
+      
       const balance = await this.blockchain.getTokenBalance(address);
       
       // Get blockchain explorer URL based on network
       const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
       const explorerUrl = this.getExplorerUrl(network, address);
       
+      // Delete the status message
+      await this.bot.deleteMessage(chatId, statusMsg.message_id);
+      
+      // Format the balance with commas for better readability
+      const formattedBalance = Number(balance).toLocaleString();
+      
+      // Create a visual representation of tokens based on amount
+      let tokenVisual = '';
+      const balanceNum = parseFloat(balance);
+      
+      if (balanceNum <= 0) {
+        tokenVisual = '⚪'; // Empty circle for zero balance
+      } else if (balanceNum < 100) {
+        tokenVisual = '🥉'; // Bronze for small balance
+      } else if (balanceNum < 1000) {
+        tokenVisual = '🥈'; // Silver for medium balance
+      } else if (balanceNum < 10000) {
+        tokenVisual = '🥇'; // Gold for large balance
+      } else {
+        tokenVisual = '👑'; // Crown for very large balance
+      }
+      
+      // Add user tier based on token amount
+      let userTier = '';
+      if (balanceNum <= 0) {
+        userTier = 'Observer';
+      } else if (balanceNum < 100) {
+        userTier = 'Member';
+      } else if (balanceNum < 1000) {
+        userTier = 'Contributor';
+      } else if (balanceNum < 10000) {
+        userTier = 'Influencer';
+      } else {
+        userTier = 'Leader';
+      }
+      
+      // Format the wallet address for better display (first 6 + last 4 chars)
+      const shortAddress = `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+      
+      // Send the final balance message with enhanced formatting
       this.bot.sendMessage(
         chatId,
-        `Your DAO Token Balance: *${balance} tokens*\n\nWallet Address: \`${address}\`\n\n[View on Block Explorer](${explorerUrl})`,
+        `${tokenVisual} *Your DAO Token Balance*\n\n*${formattedBalance} tokens*\n\n` +
+        `*Tier:* ${userTier}\n` +
+        `*Wallet:* \`${address}\`\n\n` +
+        `🔍 [View on Block Explorer](${explorerUrl})\n` +
+        `\nYour tokens represent your voting power in Alphin DAO. The more tokens you have, the greater your influence on governance decisions.`,
         { parse_mode: 'Markdown' }
       );
       
@@ -479,7 +589,7 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
         daoExplanation,
         { 
           parse_mode: 'Markdown',
-          reply_markup: {
+            reply_markup: {
             keyboard: [
               [{ text: '🔑 Join DAO' }],
               [{ text: '🏁 Back to Start' }]
@@ -490,8 +600,8 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
       );
     } else {
       // In group chats, no action buttons
-      this.bot.sendMessage(
-        chatId,
+            this.bot.sendMessage(
+              chatId,
         daoExplanation,
         { parse_mode: 'Markdown' }
       );
@@ -499,55 +609,58 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
   }
   
   /**
-   * Handle callback queries from inline keyboards
-   * @param {Object} callbackQuery - Telegram callback query
+   * Handle callback query from inline keyboards
+   * @param {Object} callbackQuery - Callback query data
    */
   async handleCallbackQuery(callbackQuery) {
     const data = callbackQuery.data;
-    const userId = callbackQuery.from.id;
     const chatId = callbackQuery.message.chat.id;
+    const userId = callbackQuery.from.id;
     
-    console.log(`Received callback query: ${data} from user ${userId}`);
-    
-    // Acknowledge the callback query
-    this.bot.answerCallbackQuery(callbackQuery.id);
-    
-    if (data.startsWith('vote_')) {
-      // Handle voting callback
-      const [action, proposalId, voteType] = data.split('_');
+    try {
+      // Answer callback query to stop loading animation
+      await this.bot.answerCallbackQuery(callbackQuery.id);
       
-      // If this is from a group chat, redirect to private chat
-      if (callbackQuery.message.chat.type !== 'private') {
-        // Generate deep link to open private chat with specific payload
-        const deepLink = `https://t.me/AlphinDAO_bot?start=vote_${proposalId}_${voteType}`;
-        
-        return this.bot.sendMessage(
-          callbackQuery.from.id,
-          `To vote on this proposal, please continue in our private chat:`,
-          {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: 'Continue to Vote', url: deepLink }]
-              ]
-            }
-          }
-        ).catch(error => {
-          // If can't message the user (they haven't started the bot)
-          if (error.response && error.response.statusCode === 403) {
-            this.bot.sendMessage(
-              chatId,
-              `@${callbackQuery.from.username}, please start a private chat with me first by clicking here: https://t.me/AlphinDAO_bot?start=vote_${proposalId}_${voteType}`,
-              { reply_to_message_id: callbackQuery.message.message_id }
-            );
-          }
-        });
-      }
-      
+      // Vote callback format: v_[proposalId]_[voteType]
+      if (data.startsWith('v_')) {
+        const parts = data.split('_');
+        if (parts.length === 3) {
+          const proposalId = parts[1];
+          const voteType = parts[2];
       await this.handleVoteAction(chatId, userId, proposalId, voteType);
-    } else if (data.startsWith('help_')) {
-      // Handle help topics
-      const topic = data.split('_')[1];
-      await this.handleHelpTopic(chatId, topic);
+        }
+      } 
+      // Execute proposal callback: exec_[proposalId]
+      else if (data.startsWith('exec_')) {
+        const proposalId = data.split('_')[1];
+        await this.handleExecuteProposal(chatId, userId, proposalId);
+      }
+      // Join DAO callback
+      else if (data === 'join_dao') {
+        await this.handleJoinDAO(chatId, userId);
+      }
+      // Check balance callback
+      else if (data === 'check_balance') {
+        await this.handleCheckBalance(chatId, userId);
+      }
+      // Create proposal callback
+      else if (data === 'create_proposal') {
+        await this.handleCreateProposal(chatId, userId);
+      }
+      // View proposals callback
+      else if (data === 'view_proposals') {
+        await this.handleViewProposals(chatId, userId);
+      }
+      // Help callback
+      else if (data === 'help') {
+        await this.handleHelp(chatId);
+      }
+    } catch (error) {
+      console.error('Error handling callback query:', error);
+      this.bot.sendMessage(
+        chatId,
+        'Sorry, there was an error processing your request. Please try again later.'
+      );
     }
   }
   
@@ -555,7 +668,7 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
    * Handle voting action
    * @param {string} chatId - Telegram chat ID
    * @param {string} userId - Telegram user ID
-   * @param {string} proposalId - ID of the proposal
+   * @param {string} proposalId - ID or shortened ID of the proposal
    * @param {string} voteType - Type of vote (0=against, 1=for, 2=abstain)
    */
   async handleVoteAction(chatId, userId, proposalId, voteType) {
@@ -570,16 +683,50 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
         );
       }
       
-      // Get proposal info
+      // Get active proposals to find the full ID if only a short ID was provided
+      let fullProposalId = proposalId;
       let proposal;
-      try {
-        proposal = await this.blockchain.getProposalInfo(proposalId);
-      } catch (error) {
-        console.error('Error getting proposal info:', error);
-        return this.bot.sendMessage(
-          chatId,
-          `Error: Could not retrieve proposal information. The proposal may not exist or has expired.`
-        );
+      
+      // If proposalId is short (likely from v_ callback), find the full ID
+      if (proposalId.length <= 10) {
+        try {
+          // Get all active proposals
+          const activeProposals = await this.blockchain.getActiveProposals();
+          
+          // Find the proposal that matches the short ID
+          const matchingProposal = activeProposals.find(p => 
+            (p.id && p.id.startsWith(proposalId)) || 
+            (p.proposalId && p.proposalId.startsWith(proposalId))
+          );
+          
+          if (matchingProposal) {
+            // Use the appropriate property based on what's available
+            fullProposalId = matchingProposal.id || matchingProposal.proposalId;
+            proposal = await this.blockchain.getProposalInfo(fullProposalId);
+          } else {
+            return this.bot.sendMessage(
+              chatId,
+              `Error: Could not find an active proposal matching ID ${proposalId}.`
+            );
+          }
+        } catch (error) {
+          console.error('Error finding full proposal ID:', error);
+          return this.bot.sendMessage(
+            chatId,
+            `Error: Could not retrieve proposal information. The proposal may not exist or has expired.`
+          );
+        }
+      } else {
+        // Direct fetch if full ID was provided
+        try {
+          proposal = await this.blockchain.getProposalInfo(fullProposalId);
+        } catch (error) {
+          console.error('Error getting proposal info:', error);
+          return this.bot.sendMessage(
+            chatId,
+            `Error: Could not retrieve proposal information. The proposal may not exist or has expired.`
+          );
+        }
       }
       
       // Check if proposal is active
@@ -593,65 +740,402 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
       // Get vote type description
       const voteTypeDesc = voteType === '0' ? 'AGAINST' : voteType === '1' ? 'FOR' : 'ABSTAIN';
       
+      // Show pending message to user
+      const pendingMsg = await this.bot.sendMessage(
+        chatId,
+        `🕒 *Processing Your Vote*\n\nYou are voting ${voteTypeDesc} on proposal ${fullProposalId.substring(0, 8)}...\n\nPlease wait while we process your vote...`,
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Save pending message ID to state to ensure we can reference it later
+      const state = this.textProcessor.getConversationState(userId) || {};
+      state.pendingVoteMessageId = pendingMsg.message_id;
+      this.textProcessor.setConversationState(userId, state);
+      
       // Prompt for PIN
       const message = await this.bot.sendMessage(
         chatId,
-        `You are voting ${voteTypeDesc} on proposal ${proposalId}.\n\nPlease enter your PIN to confirm your vote:`,
+        `Please enter your PIN to confirm your vote:`,
         { reply_markup: { force_reply: true } }
       );
       
       // Setup awaiting vote PIN state
       this.textProcessor.setupAwaitingVotePin(userId, async (pin) => {
         try {
+          // Get current state to retrieve message IDs
+          const currentState = this.textProcessor.getConversationState(userId) || {};
+          const pendingMsgId = currentState.pendingVoteMessageId;
+          
+          // Delete the pending message if it exists
+          if (pendingMsgId) {
+            try {
+              await this.bot.deleteMessage(chatId, pendingMsgId);
+            } catch (deleteError) {
+              console.warn('Could not delete pending message:', deleteError.message);
+            }
+          }
+          
+          // Show processing message
+          const votingMsg = await this.bot.sendMessage(
+            chatId,
+            `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Checking credentials ⏳`,
+            { parse_mode: 'Markdown' }
+          );
+          
+          // Save voting message ID to state
+          const updatedState = this.textProcessor.getConversationState(userId) || {};
+          updatedState.votingMessageId = votingMsg.message_id;
+          this.textProcessor.setConversationState(userId, updatedState);
+          
           // Get user's wallet
           const userWallet = await this.wallets.decryptWallet(userId, pin);
           const address = await this.wallets.getWalletAddress(userId);
           
-          // Submit vote
-          const result = await this.blockchain.castVote(proposalId, userWallet, parseInt(voteType));
-          
-          // Reward user for voting
-          await this.gamification.rewardForVoting(address);
-          
-          // Notify user
-          this.bot.sendMessage(
-            chatId,
-            `Your vote has been cast successfully! 🗳️\n\nVote: ${voteTypeDesc}\nProposal ID: \`${proposalId}\`\nTransaction: \`${result.txHash}\`\n\nYou've earned tokens as a reward for participating!`,
-            { parse_mode: 'Markdown' }
-          );
-          
-          // Update vote counts in group if possible
-          if (this.communityGroupId) {
-            // This would be more complex in practice - would need to store original message ID
-            // For now, just send an update
-            const username = callbackQuery?.from?.username 
-              ? `@${callbackQuery.from.username}` 
-              : callbackQuery?.from?.first_name 
-                ? `${callbackQuery.from.first_name}${callbackQuery.from.last_name ? ' ' + callbackQuery.from.last_name : ''}` 
-                : 'A member';
-                
-            const voteIcon = voteType === '1' ? '✅' : voteType === '0' ? '❌' : '⚪';
+          // Update status message - make sure the message ID still exists
+          try {
+            await this.bot.editMessageText(
+              `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Submitting vote to blockchain ⏳`,
+              {
+                chat_id: chatId,
+                message_id: votingMsg.message_id,
+                parse_mode: 'Markdown'
+              }
+            );
+          } catch (editError) {
+            console.warn('Could not update status message:', editError.message);
+            // If we can't edit, send a new message
+            const newMsg = await this.bot.sendMessage(
+              chatId,
+              `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Submitting vote to blockchain ⏳`,
+              { parse_mode: 'Markdown' }
+            );
             
-            this.bot.sendMessage(
-              this.communityGroupId,
-              `🗳️ *Vote Cast on Proposal #${proposalId.substring(0, 8)}*\n\n${username} voted ${voteIcon} *${voteTypeDesc}*\n\n*Current Results:*\n✅ For: ${proposal.votes.forVotes} tokens\n❌ Against: ${proposal.votes.againstVotes} tokens\n⚪ Abstain: ${proposal.votes.abstainVotes} tokens\n\nEvery vote counts in our community!`,
+            // Update the message ID in state
+            const newState = this.textProcessor.getConversationState(userId) || {};
+            newState.votingMessageId = newMsg.message_id;
+            this.textProcessor.setConversationState(userId, newState);
+          }
+          
+          // Check if user has already voted using our database
+          const existingVote = await this.db.hasUserVotedOnProposal(userId, fullProposalId);
+          if (existingVote) {
+            const voteTypeText = existingVote.vote_type === 0 ? 'AGAINST' : existingVote.vote_type === 1 ? 'FOR' : 'ABSTAIN';
+            // Delete status message
+            if (currentVotingMsgId) {
+              try {
+                await this.bot.deleteMessage(chatId, currentVotingMsgId);
+              } catch (err) {
+                console.warn('Could not delete voting status message:', err.message);
+              }
+            }
+            
+            return this.bot.sendMessage(
+              chatId,
+              `You have already voted ${voteTypeText} on this proposal on ${new Date(existingVote.vote_timestamp * 1000).toLocaleString()}.\n\nYou cannot change your vote once it has been cast.`,
               { parse_mode: 'Markdown' }
             );
           }
+          
+          // Submit vote with full proposal ID
+          const result = await this.blockchain.castVote(fullProposalId, userWallet, parseInt(voteType));
+          
+          // Get latest state to ensure we have the most current message ID
+          const latestState = this.textProcessor.getConversationState(userId) || {};
+          const currentVotingMsgId = latestState.votingMessageId;
+          
+          // Check for validation errors (pre-transaction checks) 
+          if (result && !result.success && result.method === 'validation') {
+            if (currentVotingMsgId) {
+              try {
+                await this.bot.editMessageText(
+                  `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${result.error || 'Unknown validation error'}\n\nThis prevented an unnecessary transaction that would have failed.`,
+                  {
+                    chat_id: chatId,
+                    message_id: currentVotingMsgId,
+                    parse_mode: 'Markdown'
+                  }
+                );
+                return; // Stop processing since we have a validation error
+              } catch (editError) {
+                console.warn('Could not update validation message:', editError.message);
+                // Send a new message instead
+                this.bot.sendMessage(
+                  chatId,
+                  `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${result.error || 'Unknown validation error'}\n\nThis prevented an unnecessary transaction that would have failed.`,
+                  { parse_mode: 'Markdown' }
+                );
+                return; // Stop processing since we have a validation error
+              }
+            } else {
+              // If we don't have a message ID, just send a new message
+              this.bot.sendMessage(
+                chatId,
+                `ℹ️ *Vote Validation Check*\n\nWe checked your vote before submitting to the blockchain and found an issue:\n\n${result.error || 'Unknown validation error'}\n\nThis prevented an unnecessary transaction that would have failed.`,
+                { parse_mode: 'Markdown' }
+              );
+              return; // Stop processing since we have a validation error
+            }
+          }
+          
+          // Only continue with reward and notifications if vote was successful
+          if (result && result.success) {
+            // Update status message if message ID exists
+            if (currentVotingMsgId) {
+              try {
+                await this.bot.editMessageText(
+                  `🔄 *Processing Your Vote*\n\nVote: ${voteTypeDesc}\nProposal: ${fullProposalId.substring(0, 8)}...\n\n*Status:* Credentials verified ✅\n*Status:* Vote submitted ✅\n*Status:* Processing reward ⏳`,
+                  {
+                    chat_id: chatId,
+                    message_id: currentVotingMsgId,
+                    parse_mode: 'Markdown'
+                  }
+                );
+              } catch (updateError) {
+                console.warn('Could not update voting status message:', updateError.message);
+              }
+            }
+            
+            // Get updated proposal info for current vote counts
+            try {
+              const updatedProposal = await this.blockchain.getProposalInfo(fullProposalId);
+              proposal = updatedProposal; // Use the updated vote counts
+            } catch (error) {
+              console.warn('Could not get updated proposal info:', error.message);
+              // Continue with the existing proposal info
+            }
+            
+            // Track vote in database
+            try {
+              await this.db.trackUserVote(userId, fullProposalId, parseInt(voteType), result.txHash);
+              console.log(`Tracked vote for user ${userId} on proposal ${fullProposalId}`);
+            } catch (trackError) {
+              console.error('Error tracking user vote:', trackError);
+              // Continue even if tracking fails - non-critical
+            }
+
+            // Reward user for voting
+            try {
+              await this.gamification.rewardForVoting(address);
+              
+              // Delete status message before showing final success if we have a valid message ID
+              if (currentVotingMsgId) {
+                try {
+                  await this.bot.deleteMessage(chatId, currentVotingMsgId);
+                } catch (err) {
+                  console.warn('Could not delete status message:', err.message);
+                }
+              }
+              
+              // Notify user - show shortened proposal ID in the message for better UX
+              const votingMethod = result.method === 'direct' ? 
+                "You voted directly using your wallet" : 
+                "Admin assisted with your vote";
+                
+              this.bot.sendMessage(
+                chatId,
+                `✅ *Vote Cast Successfully!* 🗳️\n\n` +
+                `*Vote:* ${voteTypeDesc}\n` +
+                `*Proposal ID:* \`${fullProposalId.substring(0, 8)}...\`\n` +
+                `*Transaction:* \`${result.txHash.substring(0, 8)}...\`\n\n` +
+                `_${votingMethod}_\n\n` +
+                `You've earned tokens as a reward for participating!`,
+                { parse_mode: 'Markdown' }
+              );
+            } catch (rewardError) {
+              console.error('Error rewarding user for voting:', rewardError);
+              
+              // Notify without mentioning reward
+              this.bot.sendMessage(
+                chatId,
+                `✅ *Vote Cast Successfully!* 🗳️\n\n` +
+                `*Vote:* ${voteTypeDesc}\n` +
+                `*Proposal ID:* \`${fullProposalId.substring(0, 8)}...\`\n` +
+                `*Transaction:* \`${result.txHash.substring(0, 8)}...\``,
+                { parse_mode: 'Markdown' }
+              );
+            }
+            
+            // Update proposal in cache and check its status after the vote
+            try {
+              // Get updated proposal information with latest votes
+              const updatedProposal = await this.blockchain.getProposalInfo(fullProposalId);
+              
+              // Save updated proposal to cache
+              await this.db.updateProposalCache(updatedProposal);
+              
+              // Check if this vote makes the proposal pass or fail
+              // This is a simple check - in a real DAO, use the governance rules
+              const forVotes = parseFloat(updatedProposal.votes.forVotes);
+              const againstVotes = parseFloat(updatedProposal.votes.againstVotes);
+              const totalVotes = forVotes + againstVotes + parseFloat(updatedProposal.votes.abstainVotes);
+              
+              // If the vote is close to threshold or quorum, notify admins
+              if (Math.abs(forVotes - againstVotes) / totalVotes < 0.1 && 
+                  this.communityGroupId && totalVotes > 5) {
+                try {
+                  // This is a close vote - send a notification to the community
+                  const forPercent = (forVotes / totalVotes * 100).toFixed(1);
+                  const againstPercent = (againstVotes / totalVotes * 100).toFixed(1);
+                  
+                  await this.bot.sendMessage(
+                    this.communityGroupId,
+                    `⚠️ *Close Vote Alert!*\n\nProposal #${fullProposalId.substring(0, 8)} is very close!\n\n` +
+                    `Current results:\n` +
+                    `✅ For: ${forVotes} (${forPercent}%)\n` +
+                    `❌ Against: ${againstVotes} (${againstPercent}%)\n\n` +
+                    `Every vote counts! Make your voice heard before voting ends.`,
+                    { parse_mode: 'Markdown' }
+                  );
+                } catch (notifyError) {
+                  console.error('Error sending close vote notification:', notifyError);
+                }
+              }
+            } catch (statusError) {
+              console.error('Error checking proposal status after vote:', statusError);
+              // Non-critical, continue
+            }
+            
+            // Update vote counts in group if possible
+            if (this.communityGroupId) {
+              // Get user information for the announcement
+              const userInfo = await this.bot.getChat(userId);
+              const username = userInfo.username 
+                ? `@${userInfo.username}` 
+                : userInfo.first_name 
+                  ? `${userInfo.first_name}${userInfo.last_name ? ' ' + userInfo.last_name : ''}` 
+                  : 'A member';
+                  
+              const voteIcon = voteType === '1' ? '✅' : voteType === '0' ? '❌' : '⚪';
+              
+              // Format vote counts safely
+              const forVotes = proposal.votes?.forVotes || '0';
+              const againstVotes = proposal.votes?.againstVotes || '0';
+              const abstainVotes = proposal.votes?.abstainVotes || '0';
+              
+              try {
+                await this.bot.sendMessage(
+                  this.communityGroupId,
+                  `🗳️ *Vote Cast on Proposal #${fullProposalId.substring(0, 8)}*\n\n${username} voted ${voteIcon} *${voteTypeDesc}*\n\n*Current Results:*\n✅ For: ${forVotes} tokens\n❌ Against: ${againstVotes} tokens\n⚪ Abstain: ${abstainVotes} tokens\n\nEvery vote counts in our community!`,
+                  { parse_mode: 'Markdown' }
+                );
+              } catch (error) {
+                console.error('Error sending vote announcement to community group:', error);
+              }
+            }
+          } else if (result && result.status === 'failed' && result.method === 'simulation') {
+            // This is a simulated failure, likely means the user already voted
+            // Only try to edit if we have a valid message ID
+            if (currentVotingMsgId) {
+              try {
+                // Clean the error message to prevent Telegram formatting issues
+                let cleanErrorMsg = 'Unknown error';
+                if (result.error) {
+                  // Remove any potentially problematic characters from error message
+                  // Strip markdown characters that could break message formatting
+                  cleanErrorMsg = result.error
+                    .replace(/[\[\]\*\_\`\>\#\+\-\=\|\{\}\.\!]/g, '')
+                    .replace(/\n/g, ' ')
+                    .substring(0, 100) + (result.error.length > 100 ? '...' : '');
+                }
+                
+                await this.bot.editMessageText(
+                  `ℹ️ *Vote Simulation Complete*\n\nIt looks like you may have already voted on this proposal or there's another issue with the voting contract.\n\nReason: ${cleanErrorMsg}\n\nPlease check your previous votes or contact a DAO admin for assistance.`,
+                  {
+                    chat_id: chatId,
+                    message_id: currentVotingMsgId,
+                    parse_mode: 'Markdown'
+                  }
+                );
+              } catch (editError) {
+                console.warn('Could not update vote simulation message:', editError.message);
+                // Send a new message instead without parse_mode to avoid formatting issues
+                this.bot.sendMessage(
+                  chatId,
+                  `Vote Simulation Complete - It looks like you may have already voted on this proposal or there's another issue with the voting contract. Please check your previous votes or contact a DAO admin for assistance.`
+                );
+              }
+            } else {
+              // If we don't have a message ID, just send a new message without Markdown
+              // to avoid potential formatting issues
+              this.bot.sendMessage(
+                chatId,
+                `Vote Simulation Complete - It looks like you may have already voted on this proposal or there's another issue with the voting contract. Please check your previous votes or contact a DAO admin for assistance.`
+              );
+            }
+          } else {
+            // Vote was not successful, notify the user with the specific error if available
+            let errorMsg;
+            if (result && result.error) {
+              // Clean the error message to avoid Telegram formatting issues
+              errorMsg = `Error: ${result.error
+                .replace(/[\[\]\*\_\`\>\#\+\-\=\|\{\}\.\!]/g, '')
+                .replace(/\n/g, ' ')
+                .substring(0, 100)}`;
+              
+              if (result.error.length > 100) {
+                errorMsg += '...';
+              }
+            } else {
+              errorMsg = "We couldn't process your vote at this time. You may have already voted on this proposal, or the proposal might not be active anymore.";
+            }
+            
+            // Only try to edit if we have a valid message ID
+            if (currentVotingMsgId) {
+              try {
+                await this.bot.editMessageText(
+                  `❌ *Vote Failed*\n\n${errorMsg}\n\nPlease try again later or contact a DAO admin for assistance.`,
+                  {
+                    chat_id: chatId,
+                    message_id: currentVotingMsgId,
+                    parse_mode: 'Markdown'
+                  }
+                );
+              } catch (editError) {
+                console.warn('Could not update vote failure message:', editError.message);
+                // Send a new message instead without markdown to avoid formatting issues
+                this.bot.sendMessage(
+                  chatId,
+                  `Vote Failed - ${errorMsg}. Please try again later or contact a DAO admin for assistance.`
+                );
+              }
+            } else {
+              // If we don't have a message ID, just send a new message without markdown
+              this.bot.sendMessage(
+                chatId,
+                `Vote Failed - ${errorMsg}. Please try again later or contact a DAO admin for assistance.`
+              );
+            }
+          }
         } catch (error) {
           console.error('Error casting vote:', error);
-          this.bot.sendMessage(chatId, `Error casting vote: ${error.message}`);
+          
+          // User-friendly error message
+          let errorMsg = 'Sorry, we could not process your vote at this time.';
+          
+          if (error.message.includes('already voted')) {
+            errorMsg = 'You have already voted on this proposal.';
+          } else if (error.message.includes('Invalid PIN')) {
+            errorMsg = 'Invalid PIN. Please try again with the correct PIN.';
+          } else if (error.message.includes('insufficient funds')) {
+            errorMsg = 'There are insufficient funds to process your vote. Please contact a DAO admin.';
+          } else if (error.message.includes('rejected')) {
+            errorMsg = 'Vote transaction was rejected. You may have already voted on this proposal.';
+          }
+          
+          this.bot.sendMessage(chatId, `❌ *Vote Failed*\n\n${errorMsg}`, { parse_mode: 'Markdown' });
         }
       });
       
       // Save message ID to delete it later (for security)
-      const state = this.textProcessor.getConversationState(userId);
-      state.messageToDelete = message.message_id;
-      this.textProcessor.setConversationState(userId, state);
-      
+      const updatedState = this.textProcessor.getConversationState(userId) || {};
+      updatedState.messageToDelete = message.message_id;
+      this.textProcessor.setConversationState(userId, updatedState);
     } catch (error) {
       console.error('Error in handleVoteAction:', error);
-      this.bot.sendMessage(chatId, `Something went wrong: ${error.message}`);
+      this.bot.sendMessage(
+        chatId,
+        'Sorry, there was an error processing your vote. Please try again later.'
+      );
     }
   }
   
@@ -717,6 +1201,715 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
     const baseUrl = explorers[network.toLowerCase()] || explorers['sepolia'];
     
     return `${baseUrl}/${type}/${hash}`;
+  }
+
+  /**
+   * Handle proposal creation with steps and status updates
+   * @param {number} chatId - Chat ID
+   * @param {number} userId - User ID
+   * @param {string} pin - User's PIN
+   * @param {string} title - Proposal title
+   * @param {string} description - Proposal description
+   * @param {Object} userInfo - User information object with username, first_name, etc.
+   * @returns {Promise<void>}
+   */
+  async createProposalWithStatus(chatId, userId, pin, title, description, userInfo) {
+    try {
+      // Send initial status message
+      const statusMsg = await this.bot.sendMessage(
+        chatId,
+        '🔄 *Creating your proposal*\n\nStatus: Validating credentials...',
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Get user's wallet
+      const userWallet = await this.wallets.decryptWallet(userId, pin);
+      
+      // Update status - validated
+      await this.bot.editMessageText(
+        '🔄 *Creating your proposal*\n\nStatus: Credentials validated ✅\nStatus: Submitting to blockchain...',
+        { 
+          chat_id: chatId, 
+          message_id: statusMsg.message_id,
+          parse_mode: 'Markdown'
+        }
+      );
+      
+      // Create the proposal
+      const proposal = {
+        title: title,
+        description: description
+      };
+      
+      const result = await this.blockchain.createProposal(proposal, userWallet);
+      
+      // Update status - proposal created
+      await this.bot.editMessageText(
+        '🔄 *Creating your proposal*\n\nStatus: Credentials validated ✅\nStatus: Proposal submitted ✅\nStatus: Processing rewards...',
+        { 
+          chat_id: chatId, 
+          message_id: statusMsg.message_id,
+          parse_mode: 'Markdown'
+        }
+      );
+      
+      // Get user address
+      const address = await this.wallets.getWalletAddress(userId);
+      
+      // Reward user for creating proposal
+      await this.gamification.rewardForProposal(address);
+      
+      // Final status update - all done
+      await this.bot.editMessageText(
+        '🔄 *Creating your proposal*\n\nStatus: Credentials validated ✅\nStatus: Proposal submitted ✅\nStatus: Rewards processed ✅\nStatus: Announcing to community...',
+        { 
+          chat_id: chatId, 
+          message_id: statusMsg.message_id,
+          parse_mode: 'Markdown'
+        }
+      );
+      
+      // Create network explorer link
+      const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
+      const txExplorerUrl = this.getExplorerUrl(network, result.txHash, 'tx');
+      
+      // Delete the status message
+      await this.bot.deleteMessage(chatId, statusMsg.message_id);
+      
+      // Send confirmation to user
+      await this.bot.sendMessage(
+        chatId,
+        `📜 *Proposal Created Successfully!*\n\n` +
+        `*Title:* ${title}\n\n` +
+        `Your proposal has been submitted to the blockchain and will be announced in the community group.\n\n` +
+        `🔗 [View Transaction](${txExplorerUrl})\n\n` +
+        `✨ *What's Next?*\n` +
+        `• Members will now vote on your proposal\n` +
+        `• You've earned tokens for your contribution\n` +
+        `• Results will be determined once voting ends`,
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Announce proposal in community group
+      if (this.communityGroupId) {
+        // Truncate the proposal ID to ensure it fits within Telegram's callback_data limit
+        // Telegram has a 64-byte limit for callback_data
+        const shortProposalId = result.proposalId.substring(0, 10); // Take only first 10 chars
+        
+        const inlineKeyboard = {
+          inline_keyboard: [
+            [
+              { text: 'Vote Yes', callback_data: `v_${shortProposalId}_1` },
+              { text: 'Vote No', callback_data: `v_${shortProposalId}_0` },
+              { text: 'Abstain', callback_data: `v_${shortProposalId}_2` }
+            ]
+          ]
+        };
+        
+        try {
+          const submitterName = userInfo && userInfo.username 
+            ? `@${userInfo.username}` 
+            : userInfo && userInfo.first_name
+              ? userInfo.first_name
+              : 'a DAO member';
+              
+          await this.bot.sendMessage(
+            this.communityGroupId,
+            `📢 *New Governance Proposal*\n\nSubmitted by: ${submitterName}\n\n*${title}*\n\n${description.substring(0, 200)}${description.length > 200 ? '...' : ''}\n\n🗳️ *Voting is now open!* Your vote matters in shaping the future of Alphin DAO.\n\nSelect an option below to cast your vote:`,
+            { 
+              parse_mode: 'Markdown',
+              reply_markup: inlineKeyboard
+            }
+          );
+        } catch (groupError) {
+          console.log(`Failed to send proposal to community group: ${groupError.message}`);
+          // Handle migrated groups like in join method, if needed
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error in proposal creation:', error);
+      this.bot.sendMessage(chatId, `Error creating proposal: ${error.message}`);
+    }
+  }
+
+  /**
+   * Handle /proposals command to list active proposals
+   * @param {Object} msg - Telegram message object
+   */
+  async handleListProposals(msg) {
+    const chatId = msg.chat.id;
+    const userId = msg.from ? msg.from.id : null;
+    const isPrivateChat = msg.chat.type === 'private';
+    
+    try {
+      // Send a loading message
+      const statusMsg = await this.bot.sendMessage(
+        chatId,
+        '🔄 *Fetching active proposals...*',
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Get active proposals
+      const activeProposals = await this.blockchain.getActiveProposals();
+      
+      // For private chats, get the user's voting history to mark what they've voted on
+      let userVotes = [];
+      if (isPrivateChat && userId) {
+        try {
+          userVotes = await this.db.getUserVotedProposals(userId);
+        } catch (error) {
+          console.warn('Error getting user votes:', error);
+          // Continue without user votes
+        }
+      }
+      
+      // Delete the loading message
+      await this.bot.deleteMessage(chatId, statusMsg.message_id);
+      
+      // Check if there are any active proposals
+      if (!activeProposals || activeProposals.length === 0) {
+        return this.bot.sendMessage(
+          chatId,
+          '📭 *No Active Proposals*\n\nThere are currently no active proposals to vote on.\n\n' +
+          (isPrivateChat ? 'Want to be the first? Use /proposal to create one!' : ''),
+          { parse_mode: 'Markdown' }
+        );
+      }
+      
+      // Format the proposals list
+      let proposalsList = '🗳️ *Active Proposals*\n\n';
+      
+      // For each proposal, create a voting keyboard if in private chat
+      for (let i = 0; i < activeProposals.length; i++) {
+        const proposal = activeProposals[i];
+        const proposalId = proposal.id || proposal.proposalId;
+        const shortProposalId = proposalId.substring(0, 8);
+        const title = proposal.title || 'Untitled Proposal';
+        
+        // Add proposal to the list with index number
+        proposalsList += `*${i+1}. ${title}*\n`;
+        proposalsList += `ID: \`${shortProposalId}...\`\n\n`;
+        
+        // For private chats, send each proposal individually with voting buttons
+        if (isPrivateChat) {
+          // Only send the first 3 as individual messages, then list the rest together
+          if (i < 3) {
+            // Use the shortened ID for callback data to fit Telegram's limits
+            const shortId = proposalId.substring(0, 10);
+            
+            // Check if user has already voted on this proposal
+            const userVoteForProposal = userVotes.find(v => v.proposal_id === proposalId);
+            let voteKeyboard;
+            
+            if (userVoteForProposal) {
+              // If user has already voted, show their vote instead of voting options
+              const voteTypeText = userVoteForProposal.vote_type === 0 ? 'AGAINST' : 
+                                  userVoteForProposal.vote_type === 1 ? 'FOR' : 'ABSTAIN';
+              const voteIcon = userVoteForProposal.vote_type === 0 ? '❌' : 
+                              userVoteForProposal.vote_type === 1 ? '✅' : '⚪';
+              
+              voteKeyboard = {
+                inline_keyboard: [
+                  [{ text: `You voted ${voteIcon} ${voteTypeText} on ${new Date(userVoteForProposal.vote_timestamp * 1000).toLocaleDateString()}`, callback_data: 'already_voted' }]
+                ]
+              };
+            } else {
+              // If user hasn't voted, show voting options
+              voteKeyboard = {
+                inline_keyboard: [
+                  [
+                    { text: '✅ Vote Yes', callback_data: `v_${shortId}_1` },
+                    { text: '❌ Vote No', callback_data: `v_${shortId}_0` },
+                    { text: '⚪ Abstain', callback_data: `v_${shortId}_2` }
+                  ]
+                ]
+              };
+            }
+            
+            await this.bot.sendMessage(
+              chatId,
+              `*Proposal #${i+1}: ${title}*\n\nID: \`${shortProposalId}...\`\n\n${proposal.description ? (proposal.description.substring(0, 200) + (proposal.description.length > 200 ? '...' : '')) : 'No description available.'}\n\nCast your vote:`,
+              { 
+                parse_mode: 'Markdown',
+                reply_markup: voteKeyboard
+              }
+            );
+          }
+        }
+      }
+      
+      // For group chats or if there are more than 3 proposals, send a summary list
+      if (!isPrivateChat || activeProposals.length > 3) {
+        // For private chats with more than 3 proposals, modify the list message
+        if (isPrivateChat && activeProposals.length > 3) {
+          proposalsList = '🗳️ *Additional Active Proposals*\n\n';
+          
+          // Only include proposals beyond the first 3 in the list
+          for (let i = 3; i < activeProposals.length; i++) {
+            const proposal = activeProposals[i];
+            const proposalId = proposal.id || proposal.proposalId;
+            const shortProposalId = proposalId.substring(0, 8);
+            const title = proposal.title || 'Untitled Proposal';
+            
+            proposalsList += `*${i+1}. ${title}*\n`;
+            proposalsList += `ID: \`${shortProposalId}...\`\n\n`;
+          }
+        }
+        
+        let replyMarkup = {};
+        
+        // For private chats, add a prompt to check specific proposals
+        if (isPrivateChat) {
+          proposalsList += 'To vote on a specific proposal, use the vote buttons shown above.';
+        } else {
+          // For group chats, add a button to open private chat for voting
+          proposalsList += 'To vote on any proposal, click the button below to start a private chat.';
+          replyMarkup = {
+            inline_keyboard: [
+              [
+                { text: '🗳️ Open Voting Interface', url: 'https://t.me/AlphinDAO_bot?start=proposals' }
+              ]
+            ]
+          };
+        }
+        
+        // Send the proposals list
+        this.bot.sendMessage(
+          chatId,
+          proposalsList,
+          { 
+            parse_mode: 'Markdown',
+            reply_markup: isPrivateChat ? {} : replyMarkup
+          }
+        );
+      }
+    } catch (error) {
+      console.error('Error listing proposals:', error);
+      this.bot.sendMessage(
+        chatId,
+        'Sorry, there was an error fetching the active proposals. Please try again later.'
+      );
+    }
+  }
+
+  /**
+   * Handle execute proposal command
+   * @param {string} chatId - Telegram chat ID
+   * @param {string} userId - Telegram user ID
+   * @param {string} proposalId - ID of the proposal to execute
+   */
+  async handleExecuteProposal(chatId, userId, proposalId) {
+    try {
+      // Check if user is a DAO member and admin
+      const hasWallet = await this.wallets.hasWallet(userId);
+      
+      if (!hasWallet) {
+        return this.bot.sendMessage(
+          chatId,
+          'You need to join the DAO before executing proposals. Use /join to get started.'
+        );
+      }
+      
+      // Check if user is an admin
+      const isAdmin = await this.userService.isAdmin(userId);
+      if (!isAdmin) {
+        return this.bot.sendMessage(
+          chatId,
+          'Only DAO administrators can execute proposals.'
+        );
+      }
+      
+      // Get active proposals to find the full ID if only a short ID was provided
+      let fullProposalId = proposalId;
+      
+      // If proposalId is short (likely from callback), find the full ID
+      if (proposalId.length <= 10) {
+        try {
+          // Get all proposals
+          const proposals = await this.blockchain.getAllProposals();
+          
+          // Find the proposal that matches the short ID
+          const matchingProposal = proposals.find(p => 
+            (p.id && p.id.startsWith(proposalId)) || 
+            (p.proposalId && p.proposalId.startsWith(proposalId))
+          );
+          
+          if (matchingProposal) {
+            // Use the appropriate property based on what's available
+            fullProposalId = matchingProposal.id || matchingProposal.proposalId;
+          } else {
+            return this.bot.sendMessage(
+              chatId,
+              `Error: Could not find a proposal matching ID ${proposalId}.`
+            );
+          }
+        } catch (error) {
+          console.error('Error finding full proposal ID:', error);
+          return this.bot.sendMessage(
+            chatId,
+            `Error: Could not retrieve proposal information. Please check the proposal ID.`
+          );
+        }
+      }
+      
+      // Show processing message
+      const statusMsg = await this.bot.sendMessage(
+        chatId,
+        `🔄 *Executing Proposal*\n\nProposal ID: \`${fullProposalId.substring(0, 8)}...\`\n\n*Status:* Checking proposal eligibility ⏳`,
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Define a status callback to update the message
+      const updateStatus = async (status) => {
+        try {
+          await this.bot.editMessageText(
+            `🔄 *Executing Proposal*\n\nProposal ID: \`${fullProposalId.substring(0, 8)}...\`\n\n*Status:* ${status}`,
+            {
+              chat_id: chatId,
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
+        } catch (error) {
+          console.warn('Could not update status message:', error.message);
+        }
+      };
+      
+      // Execute the proposal with status updates
+      const result = await this.blockchain.verifyApprovalsAndFinalizeProposal(
+        fullProposalId, 
+        { statusCallback: updateStatus }
+      );
+      
+      // Handle the result
+      if (result.success) {
+        if (result.executed) {
+          // Successfully executed
+          await this.bot.editMessageText(
+            `✅ *Proposal Successfully Executed!*\n\nProposal ID: \`${fullProposalId.substring(0, 8)}...\`\n\n${result.txHash ? `*Transaction:* \`${result.txHash.substring(0, 8)}...\`\n\n${result.blockExplorerUrl ? `[View on Block Explorer](${result.blockExplorerUrl})` : ''}` : ''}`,
+            {
+              chat_id: chatId,
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown',
+              disable_web_page_preview: true
+            }
+          );
+          
+          // Announce in the community group
+          if (this.communityGroupId) {
+            try {
+              // Get user information for the announcement
+              const userInfo = await this.bot.getChat(userId);
+              const username = userInfo.username 
+                ? `@${userInfo.username}` 
+                : userInfo.first_name 
+                  ? `${userInfo.first_name}${userInfo.last_name ? ' ' + userInfo.last_name : ''}` 
+                  : 'An administrator';
+                  
+              await this.bot.sendMessage(
+                this.communityGroupId,
+                `🚀 *Proposal Executed*\n\nProposal ID: \`${fullProposalId.substring(0, 8)}...\` has been executed by ${username}.\n\nThe approved changes have now been implemented.`,
+                { 
+                  parse_mode: 'Markdown',
+                  disable_web_page_preview: true
+                }
+              );
+            } catch (error) {
+              console.error('Error sending execution announcement to community group:', error);
+            }
+          }
+        } else {
+          // Not executed but not an error (e.g., already executed or wrong state)
+          await this.bot.editMessageText(
+            `ℹ️ *Proposal Not Executed*\n\nProposal ID: \`${fullProposalId.substring(0, 8)}...\`\n\nReason: ${result.reason}`,
+            {
+              chat_id: chatId,
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
+        }
+      } else {
+        // Execution failed with an error
+        await this.bot.editMessageText(
+          `❌ *Proposal Execution Failed*\n\nProposal ID: \`${fullProposalId.substring(0, 8)}...\`\n\nError: ${result.reason}`,
+          {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
+            parse_mode: 'Markdown'
+          }
+        );
+      }
+    } catch (error) {
+      console.error('Error in handleExecuteProposal:', error);
+      this.bot.sendMessage(
+        chatId,
+        'Sorry, there was an error executing the proposal. Please try again later.'
+      );
+    }
+  }
+
+  /**
+   * Format proposal information for display
+   * @param {Object} proposal - Proposal data
+   * @param {boolean} isDetailView - If true, show more details
+   * @param {boolean} isAdmin - If true, show admin actions
+   * @returns {Object} Formatted message and keyboard
+   */
+  formatProposalDisplay(proposal, isDetailView = false, isAdmin = false) {
+    const shortenedId = proposal.id.substring(0, 8);
+    const stateEmoji = 
+      proposal.state === 'Active' ? '🟢' :
+      proposal.state === 'Succeeded' ? '✅' :
+      proposal.state === 'Executed' ? '🏁' :
+      proposal.state === 'Defeated' ? '❌' :
+      proposal.state === 'Pending' ? '⏳' : '⚪';
+    
+    let message = `*Proposal #${shortenedId}* ${stateEmoji}\n\n`;
+    
+    // Add description (if available)
+    if (proposal.description) {
+      // Format description - limit to 200 chars for list view
+      const desc = isDetailView 
+        ? proposal.description 
+        : proposal.description.length > 200 
+          ? proposal.description.substring(0, 200) + '...' 
+          : proposal.description;
+      
+      message += `*Description:* ${desc}\n\n`;
+    }
+    
+    // Add state and votes
+    message += `*State:* ${proposal.state}\n`;
+    message += `*Votes:*\n`;
+    message += `✅ For: ${proposal.votes.forVotesFormatted || proposal.votes.forVotes}\n`;
+    message += `❌ Against: ${proposal.votes.againstVotesFormatted || proposal.votes.againstVotes}\n`;
+    message += `⚪ Abstain: ${proposal.votes.abstainVotesFormatted || proposal.votes.abstainVotes}\n`;
+    
+    // Add more details for detailed view
+    if (isDetailView) {
+      message += `\n*Proposer:* \`${proposal.proposer}\`\n`;
+      
+      if (proposal.startBlock && proposal.endBlock) {
+        message += `*Voting Period:* Block ${proposal.startBlock} - ${proposal.endBlock}\n`;
+      }
+      
+      if (proposal.targets && proposal.targets.length > 0) {
+        message += `\n*Technical Details:*\n`;
+        message += `Targets: ${proposal.targets.length} contract(s)\n`;
+      }
+    }
+    
+    // Create inline keyboard for actions
+    const keyboard = [];
+    
+    // Add voting buttons for active proposals
+    if (proposal.state === 'Active') {
+      keyboard.push([
+        { text: 'Vote For ✅', callback_data: `v_${shortenedId}_1` },
+        { text: 'Vote Against ❌', callback_data: `v_${shortenedId}_0` },
+        { text: 'Abstain ⚪', callback_data: `v_${shortenedId}_2` }
+      ]);
+    }
+    
+    // Add execute button for succeeded proposals (admin only)
+    if (proposal.state === 'Succeeded' && isAdmin) {
+      keyboard.push([
+        { text: '🚀 Execute Proposal', callback_data: `exec_${shortenedId}` }
+      ]);
+    }
+    
+    return {
+      message,
+      keyboard
+    };
+  }
+
+  /**
+   * Handle the view proposals command
+   * @param {string} chatId - Telegram chat ID
+   * @param {string} userId - Telegram user ID
+   */
+  async handleViewProposals(chatId, userId) {
+    try {
+      // Check if user is a DAO member
+      const hasWallet = await this.wallets.hasWallet(userId);
+      
+      if (!hasWallet) {
+        return this.bot.sendMessage(
+          chatId,
+          'You need to join the DAO to view proposals. Use /join to get started.'
+        );
+      }
+      
+      // Show loading message
+      const loadingMsg = await this.bot.sendMessage(
+        chatId,
+        '🔄 *Loading Proposals*\n\nPlease wait while we fetch the latest proposals...',
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Check if user is an admin
+      const isAdmin = await this.userService.isAdmin(userId);
+      
+      // Get active proposals first
+      const activeProposals = await this.blockchain.getActiveProposals();
+      
+      // Get all proposals to show in the list
+      const allProposals = await this.blockchain.getAllProposals();
+      
+      // Delete loading message
+      try {
+        await this.bot.deleteMessage(chatId, loadingMsg.message_id);
+      } catch (err) {
+        console.warn('Could not delete loading message:', err.message);
+      }
+      
+      if (allProposals.length === 0) {
+        return this.bot.sendMessage(
+          chatId,
+          'There are no proposals in the DAO yet.\n\nUse /propose to create a new proposal.'
+        );
+      }
+      
+      // Send message about active proposals first
+      if (activeProposals.length > 0) {
+        await this.bot.sendMessage(
+          chatId,
+          `*🗳️ Active Proposals (${activeProposals.length})*\n\nThe following proposals are currently open for voting:`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        // Send each active proposal
+        for (const proposal of activeProposals) {
+          const { message, keyboard } = this.formatProposalDisplay(proposal, true, isAdmin);
+          
+          await this.bot.sendMessage(
+            chatId,
+            message,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: keyboard
+              }
+            }
+          );
+        }
+      }
+      
+      // Group other proposals by state for display
+      const succeededProposals = allProposals.filter(p => p.state === 'Succeeded');
+      const executedProposals = allProposals.filter(p => p.state === 'Executed');
+      const otherProposals = allProposals.filter(p => 
+        !['Active', 'Succeeded', 'Executed'].includes(p.state)
+      );
+      
+      // Send succeeded proposals (if any) - these can be executed
+      if (succeededProposals.length > 0) {
+        await this.bot.sendMessage(
+          chatId,
+          `*✅ Passed Proposals (${succeededProposals.length})*\n\nThe following proposals have passed and are waiting to be executed:`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        for (const proposal of succeededProposals) {
+          const { message, keyboard } = this.formatProposalDisplay(proposal, true, isAdmin);
+          
+          await this.bot.sendMessage(
+            chatId,
+            message,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: keyboard.length > 0 ? {
+                inline_keyboard: keyboard
+              } : undefined
+            }
+          );
+        }
+      }
+      
+      // Send executed proposals (if any)
+      if (executedProposals.length > 0) {
+        await this.bot.sendMessage(
+          chatId,
+          `*🏁 Executed Proposals (${executedProposals.length})*\n\nThe following proposals have been executed:`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        for (const proposal of executedProposals.slice(0, 3)) { // Limit to 3 most recent
+          const { message, keyboard } = this.formatProposalDisplay(proposal, false, isAdmin);
+          
+          await this.bot.sendMessage(
+            chatId,
+            message,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: keyboard.length > 0 ? {
+                inline_keyboard: keyboard
+              } : undefined
+            }
+          );
+        }
+        
+        if (executedProposals.length > 3) {
+          await this.bot.sendMessage(
+            chatId,
+            `_... and ${executedProposals.length - 3} more executed proposals._`,
+            { parse_mode: 'Markdown' }
+          );
+        }
+      }
+      
+      // Send other proposals (defeated, expired, etc.)
+      if (otherProposals.length > 0) {
+        await this.bot.sendMessage(
+          chatId,
+          `*Other Proposals (${otherProposals.length})*\n\nThese proposals are in other states (defeated, expired, etc.):`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        for (const proposal of otherProposals.slice(0, 3)) { // Limit to 3 most recent
+          const { message, keyboard } = this.formatProposalDisplay(proposal, false, isAdmin);
+          
+          await this.bot.sendMessage(
+            chatId,
+            message,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: keyboard.length > 0 ? {
+                inline_keyboard: keyboard
+              } : undefined
+            }
+          );
+        }
+        
+        if (otherProposals.length > 3) {
+          await this.bot.sendMessage(
+            chatId,
+            `_... and ${otherProposals.length - 3} more proposals in other states._`,
+            { parse_mode: 'Markdown' }
+          );
+        }
+      }
+      
+      // Final message with instructions
+      this.bot.sendMessage(
+        chatId,
+        '*Proposal Instructions*\n\n' +
+        '• To vote on active proposals, click the vote buttons above\n' +
+        '• To create a new proposal, use the /propose command\n' +
+        (isAdmin ? '• To execute passed proposals, click the execute button\n' : '') +
+        '• To get more help, use the /help command',
+        { parse_mode: 'Markdown' }
+      );
+    } catch (error) {
+      console.error('Error in handleViewProposals:', error);
+      this.bot.sendMessage(
+        chatId,
+        'Sorry, there was an error retrieving the proposals. Please try again later.'
+      );
+    }
   }
 }
 

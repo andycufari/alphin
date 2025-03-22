@@ -22,6 +22,23 @@ class BlockchainService {
     this.blockchainEnabled = !!(rpcUrl && tokenAddress && governorAddress && adminPrivateKey &&
                                adminPrivateKey !== 'your_admin_wallet_private_key');
     
+    // Initialize mock data for when blockchain is disabled
+    this.mockProposalData = [
+      {
+        id: `mock-${Date.now()}`,
+        proposalId: `mock-${Date.now()}`,
+        title: "Mock Proposal (Blockchain Disabled)",
+        description: "This is a mock proposal because blockchain features are disabled.",
+        state: "Active",
+        proposer: "0x0000000000000000000000000000000000000000",
+        votes: {
+          forVotes: "0",
+          againstVotes: "0",
+          abstainVotes: "0"
+        }
+      }
+    ];
+    
     if (!this.blockchainEnabled) {
       console.log('Blockchain features are disabled - some or all required blockchain configuration is missing');
       return;
@@ -44,6 +61,10 @@ class BlockchainService {
         // Load ABIs
         const tokenABI = require(tokenABIPath);
         const governorABI = require(governorABIPath);
+        
+        // Save ABIs for later use
+        this.tokenAbi = tokenABI;
+        this.governorAbi = governorABI;
         
         // Initialize contracts
         this.tokenContract = new ethers.Contract(
@@ -334,28 +355,168 @@ class BlockchainService {
   }
   
   /**
-   * Cast a vote on a proposal
-   * @param {string} voterAddress - Address of the voter
+   * Vote on a proposal with pre-validation checks
+   * @param {Object} userWallet - User's wallet object
    * @param {string} proposalId - ID of the proposal
-   * @param {number} support - Vote type (0=against, 1=for, 2=abstain)
-   * @param {string} reason - Optional reason for the vote
-   * @returns {Promise<Object>} - Transaction receipt
+   * @param {number} voteType - Vote type (0=against, 1=for, 2=abstain)
+   * @returns {Promise<Object>} - Vote transaction result
    */
-  async castVote(voterAddress, proposalId, support, reason = '') {
+  async voteOnProposal(userWallet, proposalId, voteType) {
+    if (!this.blockchainEnabled) {
+      console.log('Blockchain disabled - simulating vote on proposal');
+      return { 
+        txHash: `mock-${Date.now()}`, 
+        success: true,
+        method: 'simulation'
+      };
+    }
+    
     try {
-      const wallet = new ethers.Wallet(this.getPrivateKey(voterAddress), this.provider);
-      const governor = this.governorContract.connect(wallet);
+      // Extract the user's address from their wallet
+      const voterAddress = userWallet.address;
       
-      const tx = await governor.castVoteWithReason(
+      console.log(`Attempting to vote on proposal ${proposalId} for voter ${voterAddress}, vote type: ${voteType}`);
+      
+      // VALIDATION STEP 1: Check if proposal is in active state
+      try {
+        const proposalState = await this.governorContract.state(proposalId);
+        console.log(`Proposal ${proposalId} is in state: ${proposalState} (0=Pending, 1=Active, 2=Canceled, 3=Defeated, 4=Succeeded, 5=Queued, 6=Expired, 7=Executed)`);
+        
+        // State 1 is Active in OpenZeppelin Governor
+        if (proposalState !== 1) {
+          const states = ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed'];
+          return {
+            success: false,
+            status: 'failed',
+            method: 'validation',
+            error: `Proposal is not in active state. Current state: ${states[proposalState]}`
+          };
+        }
+      } catch (stateError) {
+        console.error(`Error checking proposal state:`, stateError);
+        return {
+          success: false,
+          status: 'failed',
+          method: 'validation',
+          error: `Failed to check proposal state: ${stateError.message}`
+        };
+      }
+      
+      // VALIDATION STEP 2: Check if user has already voted
+      try {
+        // Try to get the user's vote receipt - throws an error if user hasn't voted
+        // This requires a custom getter but we can detect the revert patterns instead
+        
+        // Method 1: Call castVote with callStatic to see if it would revert
+        // If it reverts with 'already voted', then user has already voted
+        try {
+          // This won't actually submit a transaction, just simulate it
+          await this.governorContract.callStatic.castVote(proposalId, voteType, { from: voterAddress });
+          // If we get here, the call didn't revert, so user hasn't voted yet
+          console.log(`User ${voterAddress} has not voted on proposal ${proposalId} yet`);
+        } catch (callError) {
+          // Check if the error is due to already voted
+          if (callError.message.includes('already cast vote') || 
+              callError.message.includes('AlreadyCast') ||
+              callError.message.includes('already voted')) {
+            return {
+              success: false,
+              status: 'failed', 
+              method: 'validation',
+              error: 'User has already voted on this proposal'
+            };
+          }
+          // If it's another error, continue with the validation
+          console.log(`Vote simulation error not related to already voted: ${callError.message}`);
+        }
+        
+        // Method 2: As a backup, we can also check if user had voting power at snapshot
+        const snapshotBlock = await this.governorContract.proposalSnapshot(proposalId);
+        const votingPower = await this.governorContract.getVotes(voterAddress, snapshotBlock);
+        
+        console.log(`User ${voterAddress} had ${votingPower.toString()} voting power at snapshot block ${snapshotBlock}`);
+        
+        if (votingPower.isZero()) {
+          return {
+            success: false,
+            status: 'failed',
+            method: 'validation',
+            error: 'User had no voting power at the proposal snapshot. Make sure tokens were delegated before the proposal was created.'
+          };
+        }
+      } catch (validationError) {
+        console.error(`Error in vote validation:`, validationError);
+        // Continue with voting, as the validation might fail for non-critical reasons
+      }
+      
+      // All validation passed, proceed with voting
+      // Admin wallet will pay for all gas
+      const data = this.governorContract.interface.encodeFunctionData('castVote', [
         proposalId,
-        support,
-        reason || `Vote cast via Alphin DAO Bot`
-      );
+        voteType
+      ]);
       
-      return await tx.wait();
+      // Use fixed gas limit to avoid estimation issues
+      const gasLimit = ethers.BigNumber.from("300000");
+      
+      // Send transaction with admin wallet
+      const tx = await this.adminWallet.sendTransaction({
+        to: this.governorAddress,
+        data: data,
+        gasLimit: gasLimit
+      });
+      
+      console.log(`Vote transaction sent: ${tx.hash}`);
+      
+      // Wait for transaction to be mined
+      const receipt = await tx.wait();
+      console.log(`Vote transaction confirmed in block ${receipt.blockNumber}`);
+      
+      // Check if transaction was successful
+      if (receipt.status === 1) {
+        console.log(`Vote successful with admin wallet, tx hash: ${receipt.transactionHash}`);
+        return { 
+          txHash: receipt.transactionHash, 
+          success: true,
+          method: 'admin-assisted'
+        };
+      } else {
+        console.warn(`Vote transaction failed with status: ${receipt.status}`);
+        return {
+          txHash: receipt.transactionHash,
+          success: false,
+          status: 'failed',
+          method: 'admin-assisted',
+          error: 'Transaction was mined but failed'
+        };
+      }
     } catch (error) {
-      console.error(`Error casting vote:`, error);
-      throw new Error('Failed to cast vote. Please try again later.');
+      console.error(`Error in voteOnProposal:`, error);
+      
+      // Check for specific error cases
+      if (error.message.includes('already voted') || error.message.includes('AlreadyCast')) {
+        return {
+          success: false,
+          status: 'failed',
+          method: 'simulation',
+          error: 'User has already voted on this proposal'
+        };
+      } else if (error.message.includes('execution reverted')) {
+        return {
+          success: false,
+          status: 'failed',
+          method: 'simulation',
+          error: 'Transaction was rejected by the blockchain'
+        };
+      }
+      
+      // Default error
+      return {
+        success: false,
+        status: 'failed',
+        method: 'simulation',
+        error: `Failed to vote: ${error.message}`
+      };
     }
   }
   
@@ -469,6 +630,292 @@ class BlockchainService {
     } catch (error) {
       console.error('Error getting active proposals:', error);
       return []; // Return empty array on error
+    }
+  }
+
+  /**
+   * Get proposal state description based on state number
+   * @param {number} stateNum - Numeric state from contract
+   * @returns {string} User-friendly state description
+   */
+  getProposalStateDescription(stateNum) {
+    // Map numeric states to human-readable states
+    const states = [
+      'Pending',    // 0
+      'Active',     // 1
+      'Canceled',   // 2
+      'Defeated',   // 3
+      'Succeeded',  // 4
+      'Queued',     // 5
+      'Expired',    // 6
+      'Executed'    // 7
+    ];
+    return states[stateNum] || 'Unknown';
+  }
+
+  /**
+   * Execute a proposal that has passed voting
+   * @param {string} proposalId - ID of the proposal to execute
+   * @returns {Promise<{txHash: string}>} Transaction receipt
+   */
+  async executeProposal(proposalId) {
+    if (!this.blockchainEnabled) {
+      console.log('Blockchain is disabled. Simulating proposal execution...');
+      return { txHash: this.generateRandomHash() };
+    }
+    
+    try {
+      // Ensure proposal exists and is in Succeeded state
+      const proposalState = await this.getProposalState(proposalId);
+      if (proposalState !== 'Succeeded') {
+        throw new Error(`Proposal is in ${proposalState} state and cannot be executed`);
+      }
+      
+      // Connect admin wallet to provider
+      const adminWallet = new ethers.Wallet(this.adminPrivateKey, this.provider);
+      
+      // Get proposal info to retrieve the details needed for execution
+      const proposal = await this.getProposalById(proposalId);
+      if (!proposal || !proposal.descriptionHash) {
+        throw new Error('Proposal details cannot be retrieved');
+      }
+      
+      console.log(`Executing proposal ${proposalId}...`);
+      
+      // Create governor contract instance connected to admin wallet
+      const governor = new ethers.Contract(
+        this.governorAddress,
+        this.governorAbi,
+        adminWallet
+      );
+      
+      // Execute the proposal
+      const targets = proposal.targets || [];
+      const values = proposal.values || [];
+      const calldatas = proposal.calldatas || [];
+      const descriptionHash = proposal.descriptionHash;
+      
+      console.log(`Execute params: targets=${targets}, values=${values}, calldatas length=${calldatas.length}, descHash=${descriptionHash}`);
+      
+      // Set a higher gas limit for execution as it can be complex
+      const gasLimit = ethers.utils.hexlify(1000000); // 1M gas units
+      
+      // Execute the proposal transaction
+      const tx = await governor.execute(
+        targets,
+        values,
+        calldatas,
+        descriptionHash,
+        { gasLimit }
+      );
+      
+      // Wait for transaction confirmation
+      const receipt = await tx.wait();
+      console.log(`Proposal executed in tx: ${receipt.transactionHash}`);
+      
+      return { txHash: receipt.transactionHash };
+    } catch (error) {
+      console.error('Error executing proposal:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Get a block explorer URL for a transaction
+   * @param {string} txHash - Transaction hash
+   * @returns {string} Block explorer URL
+   */
+  getBlockExplorerUrl(txHash) {
+    const networkConfig = this.config.networks[this.config.networkName];
+    if (!networkConfig || !networkConfig.blockExplorerUrl) {
+      return '';
+    }
+    return `${networkConfig.blockExplorerUrl}/tx/${txHash}`;
+  }
+
+  /**
+   * Get information about a proposal
+   * @param {string} proposalId - ID of the proposal
+   */
+  async getProposalById(proposalId) {
+    if (!this.blockchainEnabled) {
+      return this.mockProposalData.find(p => p.id === proposalId);
+    }
+
+    try {
+      const governor = new ethers.Contract(this.governorAddress, this.governorAbi, this.provider);
+      const proposal = await governor.proposals(proposalId);
+
+      // Format the proposal data
+      return {
+        id: proposalId,
+        proposalId: proposalId,
+        proposer: proposal.proposer,
+        description: '', // Not stored in the proposals mapping
+        startBlock: proposal.startBlock.toString(),
+        endBlock: proposal.endBlock.toString(),
+        votes: {
+          forVotes: ethers.utils.formatUnits(proposal.forVotes, this.tokenDecimals),
+          againstVotes: ethers.utils.formatUnits(proposal.againstVotes, this.tokenDecimals),
+          abstainVotes: ethers.utils.formatUnits(proposal.abstainVotes, this.tokenDecimals)
+        }
+      };
+    } catch (error) {
+      console.error(`Error getting proposal info for ${proposalId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Get all proposals (active or not)
+   * @returns {Promise<Array>} Array of proposals
+   */
+  async getAllProposals() {
+    if (!this.blockchainEnabled) {
+      return this.mockProposalData || [];
+    }
+
+    try {
+      // Ensure we have the governor ABI
+      if (!this.governorAbi) {
+        console.error('Governor ABI not found, cannot get proposals');
+        return [];
+      }
+      
+      // Get proposal created events from contract
+      const governor = new ethers.Contract(
+        this.governorAddress,
+        this.governorAbi,
+        this.provider
+      );
+      
+      // Get filter for ProposalCreated events
+      const filter = governor.filters.ProposalCreated();
+      
+      // Get all events from the last 10000 blocks or from contract deployment
+      const currentBlock = await this.provider.getBlockNumber();
+      const fromBlock = Math.max(0, currentBlock - 10000);
+      
+      const events = await governor.queryFilter(filter, fromBlock, 'latest');
+      
+      // Process events into proposal objects
+      const proposals = await Promise.all(events.map(async (event) => {
+        if (!event.args) {
+          console.warn('Proposal event missing args, skipping...');
+          return null;
+        }
+        
+        const proposalId = event.args.proposalId.toString();
+        let state = 'Unknown';
+        
+        try {
+          state = await this.getProposalState(proposalId);
+        } catch (stateError) {
+          console.warn(`Could not get state for proposal ${proposalId}:`, stateError.message);
+        }
+        
+        return {
+          id: proposalId,
+          proposalId: proposalId,
+          proposer: event.args.proposer,
+          targets: event.args.targets || [],
+          values: Array.isArray(event.args.values) 
+            ? event.args.values.map(v => v.toString())
+            : [],
+          signatures: event.args.signatures || [],
+          calldatas: event.args.calldatas || [],
+          startBlock: event.args.startBlock ? event.args.startBlock.toString() : '0',
+          endBlock: event.args.endBlock ? event.args.endBlock.toString() : '0',
+          description: event.args.description || '',
+          descriptionHash: event.args.descriptionHash || '',
+          state: state,
+          createdAt: event.blockNumber || 0,
+          votes: {
+            forVotes: '0',
+            againstVotes: '0',
+            abstainVotes: '0'
+          }
+        };
+      }));
+      
+      // Filter out nulls from any failed mappings
+      const validProposals = proposals.filter(p => p !== null);
+      
+      // Sort proposals by creation time or block number (newest first)
+      return validProposals.sort((a, b) => b.createdAt - a.createdAt);
+    } catch (error) {
+      console.error('Error getting all proposals:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get the state of a proposal as a string
+   * @param {string} proposalId - ID of the proposal to check
+   * @returns {Promise<string>} - String representation of the proposal state
+   */
+  async getProposalState(proposalId) {
+    if (!this.blockchainEnabled) {
+      return 'Active'; // Default state for mock proposals
+    }
+    
+    try {
+      // Check if we have the governorAbi
+      if (!this.governorAbi) {
+        console.warn('Governor ABI not available for getProposalState');
+        return 'Unknown';
+      }
+      
+      // Connect to contract with provider (read-only)
+      const governor = new ethers.Contract(
+        this.governorAddress,
+        this.governorAbi,
+        this.provider
+      );
+      
+      // Try to call the state function
+      try {
+        const stateNum = await governor.state(proposalId);
+        return this.getProposalStateDescription(stateNum);
+      } catch (stateError) {
+        console.warn('Error getting proposal state using standard method:', stateError.message);
+        
+        // Fallback: try to get the proposal data and infer the state
+        try {
+          const proposal = await governor.proposals(proposalId);
+          
+          // Check if proposal exists and try to infer state from timestamps/blocks
+          if (proposal) {
+            const currentBlock = await this.provider.getBlockNumber();
+            const startBlock = proposal.startBlock ? proposal.startBlock.toNumber() : 0;
+            const endBlock = proposal.endBlock ? proposal.endBlock.toNumber() : 0;
+            
+            if (currentBlock < startBlock) {
+              return 'Pending';
+            } else if (currentBlock >= startBlock && currentBlock <= endBlock) {
+              return 'Active';
+            } else {
+              // If voting is over, check vote counts
+              const forVotes = proposal.forVotes || 0;
+              const againstVotes = proposal.againstVotes || 0;
+              
+              if (forVotes.gt(againstVotes)) {
+                return 'Succeeded';
+              } else {
+                return 'Defeated';
+              }
+            }
+          }
+        } catch (proposalError) {
+          console.warn('Error getting proposal data:', proposalError.message);
+        }
+        
+        // Default fallback
+        return 'Unknown';
+      }
+    } catch (error) {
+      console.error('Error in getProposalState:', error);
+      return 'Unknown';
     }
   }
 }

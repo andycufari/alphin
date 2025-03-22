@@ -134,12 +134,39 @@ class BlockchainManager {
    */
   async castVote(proposalId, userWallet, voteType) {
     try {
-      // Vote using the service (admin pays gas)
+      console.log(`Casting vote on proposal ${proposalId}, vote type: ${voteType}, voter: ${userWallet.address}`);
+      
+      if (!proposalId) {
+        throw new Error('Invalid proposal ID');
+      }
+      
+      if (!userWallet || !userWallet.address) {
+        throw new Error('Invalid user wallet');
+      }
+      
+      // Vote using the service (admin pays gas) - now with validation checks
       const result = await this.service.voteOnProposal(userWallet, proposalId, voteType);
+      
+      // Simply pass through the result - the service now handles all error cases
+      // and returns a structured response with added validation checks
+      console.log(`Vote result: ${JSON.stringify(result)}`);
+      
+      // Handle validation errors cleanly and in a more user-friendly way
+      if (!result.success && result.method === 'validation') {
+        console.log(`Vote validation check failed: ${result.error}`);
+        // The validation errors are already properly formatted in the service
+      }
+      
       return result;
     } catch (error) {
       console.error('Error casting vote:', error);
-      throw new Error(`Failed to cast vote: ${error.message}`);
+      
+      // Return a structured error response
+      return {
+        success: false,
+        error: error.message,
+        errorDetails: error.toString()
+      };
     }
   }
   
@@ -184,6 +211,119 @@ class BlockchainManager {
     } catch (error) {
       console.error('Error getting proposal info:', error);
       throw new Error(`Failed to get proposal info: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Verify approvals and finalize a proposal if it has passed
+   * @param {string} proposalId - Proposal ID to check
+   * @param {Object} options - Optional parameters
+   * @param {Function} options.statusCallback - Callback function to report status updates
+   * @returns {Promise<{success: boolean, executed: boolean, reason: string}>} Result of the operation
+   */
+  async verifyApprovalsAndFinalizeProposal(proposalId, options = {}) {
+    try {
+      // Default status callback if none provided
+      const statusCallback = options.statusCallback || ((status) => console.log(`Proposal execution status: ${status}`));
+      
+      statusCallback("Checking proposal state...");
+      
+      // Check if proposal exists
+      const proposal = await this.service.getProposalById(proposalId);
+      if (!proposal) {
+        return { success: false, executed: false, reason: 'Proposal not found' };
+      }
+      
+      // Get current proposal state
+      const state = await this.service.getProposalState(proposalId);
+      statusCallback(`Current proposal state: ${state}`);
+      
+      // If proposal is not in Succeeded state, it can't be executed
+      if (state !== 'Succeeded') {
+        const reason = state === 'Executed' 
+          ? 'Proposal has already been executed' 
+          : `Proposal is in ${state} state and cannot be executed`;
+        
+        return { success: true, executed: false, reason };
+      }
+      
+      statusCallback("Proposal has passed. Preparing to execute...");
+      
+      // Proposal has passed and can be executed
+      try {
+        statusCallback("Executing proposal on the blockchain...");
+        
+        // Execute the proposal
+        const result = await this.service.executeProposal(proposalId);
+        
+        statusCallback("Proposal execution complete!");
+        
+        return { 
+          success: true, 
+          executed: true, 
+          txHash: result.txHash,
+          blockExplorerUrl: this.service.getBlockExplorerUrl(result.txHash)
+        };
+      } catch (execError) {
+        console.error('Failed to execute proposal:', execError);
+        
+        statusCallback("Execution failed. Checking if already executed...");
+        
+        // Check if proposal is now in Executed state (someone else might have executed it)
+        const newState = await this.service.getProposalState(proposalId);
+        if (newState === 'Executed') {
+          return { 
+            success: true, 
+            executed: true, 
+            reason: 'Proposal was already executed by someone else' 
+          };
+        }
+        
+        return { 
+          success: false, 
+          executed: false, 
+          reason: `Failed to execute proposal: ${execError.message}` 
+        };
+      }
+    } catch (error) {
+      console.error('Error verifying/finalizing proposal:', error);
+      return { success: false, executed: false, reason: error.message };
+    }
+  }
+  
+  /**
+   * Get all proposals (active or not)
+   * @returns {Promise<Array>} Array of all proposals
+   */
+  async getAllProposals() {
+    try {
+      // Get all proposals from the service
+      const proposals = await this.service.getAllProposals();
+      
+      // Format the proposals with additional metadata if needed
+      return proposals.map(proposal => {
+        // Calculate some useful metadata
+        const shortenedId = proposal.id.substring(0, 8);
+        const stateFormatted = proposal.state.charAt(0).toUpperCase() + proposal.state.slice(1).toLowerCase();
+        
+        // Add metadata to the proposal
+        return {
+          ...proposal,
+          shortenedId,
+          stateFormatted,
+          // Add formatted vote counts
+          votes: {
+            ...proposal.votes,
+            // Format the vote counts with commas for better readability
+            forVotesFormatted: Number(proposal.votes.forVotes).toLocaleString(),
+            againstVotesFormatted: Number(proposal.votes.againstVotes).toLocaleString(),
+            abstainVotesFormatted: Number(proposal.votes.abstainVotes).toLocaleString()
+          }
+        };
+      });
+    } catch (error) {
+      console.error('Error getting all proposals:', error);
+      return [];
     }
   }
 }

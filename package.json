@@ -7,7 +7,8 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "reset-users": "node scripts/reset_users.js"
+    "reset-users": "node scripts/reset_users.js",
+    "repair-db": "node scripts/repair_database.js"
   },
   "keywords": [
     "dao",

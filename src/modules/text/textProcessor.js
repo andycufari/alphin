@@ -10,6 +10,7 @@ class TextProcessor {
     this.ai = aiService;
     this.conversationStates = new Map();
     this.botUsername = null; // Will be set when processing messages
+    this.proposalCallbacks = {}; // Initialize proposalCallbacks map
     
     // Define states for conversation flows
     this.STATES = {
@@ -33,6 +34,37 @@ class TextProcessor {
     const messageText = msg.text;
     
     console.log(`Processing message from user ${userId}: ${messageText}`);
+    
+    // Handle menu button actions
+    if (messageText === '🔑 Join DAO') {
+      const joinCommand = { ...msg, text: '/join' };
+      return bot.emit('message', joinCommand);
+    }
+    
+    if (messageText === '📝 Create Proposal') {
+      const proposalCommand = { ...msg, text: '/proposal' };
+      return bot.emit('message', proposalCommand);
+    }
+    
+    if (messageText === '🗳️ View Proposals') {
+      const proposalsCommand = { ...msg, text: '/proposals' };
+      return bot.emit('message', proposalsCommand);
+    }
+    
+    if (messageText === '💰 Check Balance') {
+      const balanceCommand = { ...msg, text: '/balance' };
+      return bot.emit('message', balanceCommand);
+    }
+    
+    if (messageText === '❓ Help' || messageText === '❓ What is a DAO?') {
+      const helpCommand = { ...msg, text: '/help' };
+      return bot.emit('message', helpCommand);
+    }
+    
+    if (messageText === '🏁 Back to Start') {
+      const startCommand = { ...msg, text: '/start' };
+      return bot.emit('message', startCommand);
+    }
     
     // Get current state for this user
     const state = this.getConversationState(userId);
@@ -255,9 +287,11 @@ class TextProcessor {
     }
     
     // Process proposal submission with PIN
-    if (state.callback) {
+    if (this.proposalCallbacks[userId]) {
       try {
-        await state.callback(pin, state.proposalTitle, state.proposalDescription);
+        await this.proposalCallbacks[userId](pin, state.proposalTitle, state.proposalDescription);
+        // Remove the callback after successful execution
+        delete this.proposalCallbacks[userId];
       } catch (error) {
         console.error('Error in proposal submission:', error);
         bot.sendMessage(chatId, `Error submitting your Alphin DAO proposal: ${error.message}`);
@@ -316,15 +350,19 @@ class TextProcessor {
   }
   
   /**
-   * Set up a conversation to create a proposal
+   * Set up a conversation for creating a proposal
    * @param {string} userId - Telegram user ID
-   * @param {Function} callback - Function to call with proposal data and PIN
+   * @param {Function} callback - Callback to execute when proposal data is complete
    */
   setupCreatingProposal(userId, callback) {
+    // Initialize state for proposal creation
     const state = this.getConversationState(userId);
     state.state = this.STATES.CREATING_PROPOSAL_TITLE;
-    state.callback = callback;
+    state.data = {}; // Reset any existing data
     this.setConversationState(userId, state);
+    
+    // Store the callback for later use
+    this.proposalCallbacks[userId] = callback;
   }
   
   /**
