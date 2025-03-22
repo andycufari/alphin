@@ -70,8 +70,25 @@ class BlockchainManager {
    */
   async delegateTokens(delegatorAddress, delegateeAddress) {
     try {
+      console.log(`Attempting to delegate tokens from ${delegatorAddress} to ${delegateeAddress}`);
       const result = await this.service.delegateVotes(delegatorAddress, delegateeAddress);
-      return result;
+      
+      // Check if the delegation was successful
+      if (result.status === 'success') {
+        console.log(`Successfully delegated tokens. Transaction: ${result.txHash}`);
+        return {
+          success: true,
+          txHash: result.txHash,
+          blockNumber: result.blockNumber
+        };
+      } else if (result.delegationError) {
+        // This is a specific delegation error, likely due to contract restrictions
+        console.warn(`Delegation failed due to contract restrictions: ${result.message}`);
+        throw new Error(result.message);
+      } else {
+        console.error(`Delegation failed with status: ${result.status}`);
+        throw new Error(`Failed to delegate tokens: ${result.message || 'Unknown error'}`);
+      }
     } catch (error) {
       console.error('Error delegating tokens:', error);
       throw new Error(`Failed to delegate tokens: ${error.message}`);

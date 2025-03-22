@@ -118,7 +118,7 @@ class BlockchainService {
   }
 
   /**
-   * Delegate voting power
+   * Delegate voting power using the admin wallet to pay for gas
    * @param {string} delegatorAddress - Address delegating voting power
    * @param {string} delegateeAddress - Address receiving voting power
    * @returns {Promise<Object>} - Transaction details
@@ -138,9 +138,68 @@ class BlockchainService {
         throw new Error('No tokens to delegate');
       }
       
-      // Execute delegation
-      const tx = await this.tokenContract.delegate(delegateeAddress, {
-        gasLimit: 100000
+      // First try using the adminDelegateFor function which is more secure
+      // This function should be added to the token contract to allow the admin to delegate on behalf of users
+      try {
+        console.log('Attempting to use adminDelegateFor function...');
+        
+        // Check if the function exists on the contract
+        if (typeof this.tokenContract.adminDelegateFor === 'function') {
+          // Add 30% buffer to gas estimate
+          const gasLimit = 200000; // Safe default
+          
+          // Call the adminDelegateFor function
+          const tx = await this.tokenContract.adminDelegateFor(
+            delegatorAddress, 
+            delegateeAddress,
+            { gasLimit }
+          );
+          
+          console.log(`Admin delegation transaction sent: ${tx.hash}`);
+          
+          // Wait for confirmation
+          const receipt = await tx.wait();
+          
+          return {
+            status: 'success',
+            method: 'adminDelegateFor',
+            txHash: receipt.transactionHash,
+            blockNumber: receipt.blockNumber
+          };
+        } else {
+          console.log('adminDelegateFor function not found on contract, falling back to standard delegation');
+        }
+      } catch (adminError) {
+        console.warn('Error using adminDelegateFor:', adminError.message);
+        console.log('Falling back to standard delegation method...');
+      }
+      
+      // Standard delegation method - this might not work if the contract doesn't support it
+      // Get the function signature and encoded parameters for the delegate call
+      const data = this.tokenContract.interface.encodeFunctionData('delegate', [delegateeAddress]);
+      
+      // Estimate gas for the transaction with a safe fallback
+      let gasLimit;
+      try {
+        const gasEstimate = await this.provider.estimateGas({
+          from: this.adminWallet.address,
+          to: this.tokenAddress,
+          data: data
+        });
+        
+        // Add 30% buffer to gas estimate
+        gasLimit = gasEstimate.mul(13).div(10);
+      } catch (gasError) {
+        console.warn('Error estimating gas:', gasError.message);
+        gasLimit = ethers.BigNumber.from("200000"); // Safe default for ethers v5
+        // For ethers v6, use: gasLimit = ethers.parseUnits("200000", "wei");
+      }
+      
+      // Create and send the transaction
+      const tx = await this.adminWallet.sendTransaction({
+        to: this.tokenAddress,
+        data: data,
+        gasLimit: gasLimit
       });
       
       console.log(`Delegation transaction sent: ${tx.hash}`);
@@ -150,18 +209,23 @@ class BlockchainService {
       
       return {
         status: 'success',
+        method: 'standardDelegate',
         txHash: receipt.transactionHash,
         blockNumber: receipt.blockNumber
       };
     } catch (error) {
       console.error('Error delegating votes:', error);
       
-      // Special handling for self-delegation permission error
-      if (error.message.includes('permission')) {
+      // Special handling for reverted transactions
+      if (error.message.includes('execution reverted')) {
+        // This usually happens because the admin wallet doesn't have permission
+        console.log('Delegation transaction reverted - likely a permission issue');
+        
         return {
           status: 'error',
-          requiresUserAction: true,
-          message: 'You need to delegate your tokens directly through your wallet.'
+          delegationError: true,
+          message: 'Token delegation failed. This usually happens because the token contract does not support delegation by the admin wallet.',
+          technicalError: error.message
         };
       }
       

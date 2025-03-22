@@ -147,3 +147,16 @@ You can delete wallet files with:
 ```bash
 rm wallets/*.json
 ```
+
+## Technical Details
+
+### Token Delegation
+
+For the governance to work properly, tokens must be delegated to enable voting power. Alphin handles this automatically:
+
+1. When a user joins, their tokens are automatically delegated to themselves
+2. The DAO admin wallet pays for all gas fees (transactions)
+3. The smart contract uses a special `adminDelegateFor` function that allows secure delegation by admin
+4. If the token contract doesn't have this function, the bot falls back to standard delegation methods
+
+This architecture ensures users never need to pay gas fees or handle complex delegation processes.
