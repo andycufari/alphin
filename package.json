@@ -1,0 +1,31 @@
+{
+  "name": "alfin-dao-bot",
+  "version": "1.0.0",
+  "description": "Telegram AI agent for DAO management",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "dao",
+    "blockchain",
+    "telegram",
+    "bot",
+    "ai"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0",
+    "ethers": "^5.7.2",
+    "dotenv": "^16.0.3",
+    "sqlite3": "^5.1.6",
+    "openai": "^4.0.0",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
