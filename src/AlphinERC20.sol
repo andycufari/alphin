@@ -8,7 +8,7 @@ contract AlfinToken is ERC20Votes, Ownable {
     uint256 public constant INITIAL_SUPPLY = 1000000 * 10**18; // 1 millón de tokens
     mapping(address => bool) public hasJoined;
 
-    constructor() ERC20("AlfinDAO Token", "ALF") ERC20Permit("AlfinDAO Token") {
+    constructor() ERC20("AlphinDAO Token", "ALF") ERC20Permit("AlfinDAO Token") {
         _mint(msg.sender, INITIAL_SUPPLY); // Admin recibe todos los tokens al inicio
     }
 
