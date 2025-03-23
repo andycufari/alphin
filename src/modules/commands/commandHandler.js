@@ -341,12 +341,14 @@ class CommandHandler {
             tokenVisual = '👑'; // Crown for very large balance
           }
           
+          const groupLink = process.env.DAO_GROUP_LINK;
+
           // Customize message based on admin status
           let welcomeMessage;
           if (result.isAdmin) {
-            welcomeMessage = `${tokenVisual} *Welcome to the DAO, Admin!* 🎉\n\nYour wallet has been created and *${formattedAmount} admin tokens* have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals and create new ones right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
+            welcomeMessage = `${tokenVisual} *Welcome to the DAO, Admin!* 🎉\n\nYour wallet has been created and *${formattedAmount} admin tokens* have been sent to your address.\n\nJoin us on our private channel to keep you updated: [Join DAO Group](${groupLink})\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals and create new ones right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
           } else {
-            welcomeMessage = `${tokenVisual} *Welcome to the DAO!* 🎉\n\nYour wallet has been created and *${formattedAmount} tokens* have been sent to your address.\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
+            welcomeMessage = `${tokenVisual} *Welcome to the DAO!* 🎉\n\nYour wallet has been created and *${formattedAmount} tokens* have been sent to your address.\n\nJoin us on our private channel to keep you updated: [Join DAO Group](${groupLink})\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
           }
           
           this.bot.sendMessage(
