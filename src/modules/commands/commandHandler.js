@@ -1295,11 +1295,13 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
       'polygon': 'https://polygonscan.com',
       'bsc': 'https://bscscan.com',
       'avalanche': 'https://snowtrace.io',
+      'mantletestnet': 'https://explorer.sepolia.mantle.xyz'
       // Add more networks as needed
     };
     
     // Default to Sepolia if network not found
     const baseUrl = explorers[network.toLowerCase()] || explorers['sepolia'];
+    console.log(`Using explorer URL for ${network}: ${baseUrl}`);
     
     return `${baseUrl}/${type}/${hash}`;
   }
