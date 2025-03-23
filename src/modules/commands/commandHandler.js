@@ -80,7 +80,7 @@ class CommandHandler {
     
     // Remove complex JSON and object content 
     errorString = errorString.replace(/\{[^}]+\}/g, "{...}");
-    errorString = errorString.replace(/\[[^\]]+\]/g, "[...]");
+    errorString = errorString.replace(/\[[^\]]]+\]/g, "[...]");
     
     // Remove any URLs that might be in the error
     errorString = errorString.replace(/(https?:\/\/[^\s]+)/g, "URL");
@@ -123,19 +123,19 @@ class CommandHandler {
     ], { scope: { type: 'all_group_chats' } });
     
     // Command handlers
-    this.bot.onText(/\/start/, this.handleStart.bind(this));
-    this.bot.onText(/\/join/, this.handleJoinDAO.bind(this));
-    this.bot.onText(/\/proposal/, this.handleCreateProposal.bind(this));
-    this.bot.onText(/\/proposals/, this.handleListProposals.bind(this));
-    this.bot.onText(/\/balance/, this.handleCheckBalance.bind(this));
-    this.bot.onText(/\/help/, this.handleHelp.bind(this));
-    this.bot.onText(/\/whatisdao/, this.handleWhatIsDAO.bind(this));
+    this.bot.onText(/^\/start$/, this.handleStart.bind(this));
+    this.bot.onText(/^\/join$/, this.handleJoinDAO.bind(this));
+    this.bot.onText(/^\/proposal$/, this.handleCreateProposal.bind(this));
+    this.bot.onText(/^\/proposals$/, this.handleListProposals.bind(this));
+    this.bot.onText(/^\/balance$/, this.handleCheckBalance.bind(this));
+    this.bot.onText(/^\/help$/, this.handleHelp.bind(this));
+    this.bot.onText(/^\/whatisdao$/, this.handleWhatIsDAO.bind(this));
     
     // Handle button callbacks
     this.bot.on('callback_query', this.handleCallbackQuery.bind(this));
     
     // Admin commands
-    this.bot.onText(/\/execute(?:\s+([a-zA-Z0-9]+))?/, async (msg, match) => {
+    this.bot.onText(/^\/execute(?:\s+([a-zA-Z0-9]+))?$/, async (msg, match) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
       const proposalId = match[1];
@@ -247,9 +247,12 @@ class CommandHandler {
         const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
         const explorerUrl = this.getExplorerUrl(network, address);
         
+        // Get the DAO group link from the .env file
+        const groupLink = process.env.DAO_GROUP_LINK;
+        
         return this.bot.sendMessage(
           chatId,
-          `You are already a member of the DAO!\n\nYour wallet address: \`${address}\`\nYour token balance: ${balance} tokens\n\n[View on Block Explorer](${explorerUrl})`,
+          `You are already a member of the DAO!\n\nJoin us on our private channel to keep you updated: [Join DAO Group](${groupLink})\n\nYour wallet address: \`${address}\`\nYour token balance: ${balance} tokens\n\n[View on Block Explorer](${explorerUrl})`,
           { parse_mode: 'Markdown' }
         );
       }
@@ -1226,7 +1229,8 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
           this.bot.sendMessage(chatId, `❌ *Vote Failed*\n\n${errorMsg}`, { parse_mode: 'Markdown' });
         }
       });
-      
+
+            
       // Save message ID to delete it later (for security)
       const updatedState = this.textProcessor.getConversationState(userId) || {};
       updatedState.messageToDelete = message.message_id;
