@@ -148,100 +148,27 @@ class BlockchainService {
     if (!this.blockchainEnabled) {
       return { status: 'error', message: 'Blockchain features are disabled' };
     }
-    
+
     console.log(`Delegating votes from ${delegatorAddress} to ${delegateeAddress}`);
-    
+
     try {
       // Check token balance
       const balance = await this.tokenContract.balanceOf(delegatorAddress);
-      
+
       if (balance.isZero()) {
         throw new Error('No tokens to delegate');
       }
-      
-      // First try using the adminDelegateFor function which is more secure
-      // This function should be added to the token contract to allow the admin to delegate on behalf of users
-      try {
-        console.log('Attempting to use adminDelegateFor function...');
-        
-        // Check if the function exists on the contract
-        if (typeof this.tokenContract.adminDelegateFor === 'function') {
-          // Add 30% buffer to gas estimate
-          const gasLimit = 200000; // Safe default
-          
-          // Call the adminDelegateFor function
-          const tx = await this.tokenContract.adminDelegateFor(
-            delegatorAddress, 
-            delegateeAddress,
-            { gasLimit }
-          );
-          
-          console.log(`Admin delegation transaction sent: ${tx.hash}`);
-          
-          // Wait for confirmation
-          const receipt = await tx.wait();
-          
-          return {
-            status: 'success',
-            method: 'adminDelegateFor',
-            txHash: receipt.transactionHash,
-            blockNumber: receipt.blockNumber
-          };
-        } else {
-          console.log('adminDelegateFor function not found on contract, falling back to standard delegation');
-        }
-      } catch (adminError) {
-        console.warn('Error using adminDelegateFor:', adminError.message);
-        console.log('Falling back to standard delegation method...');
-      }
-      
-      // Standard delegation method - this might not work if the contract doesn't support it
-      // Get the function signature and encoded parameters for the delegate call
-      const data = this.tokenContract.interface.encodeFunctionData('delegate', [delegateeAddress]);
-      
-      // Estimate gas for the transaction with a safe fallback
-      let gasLimit;
-      try {
-        const gasEstimate = await this.provider.estimateGas({
-          from: this.adminWallet.address,
-          to: this.tokenAddress,
-          data: data
-        });
-        
-        // Add 30% buffer to gas estimate
-        gasLimit = gasEstimate.mul(13).div(10);
-      } catch (gasError) {
-        console.warn('Error estimating gas:', gasError.message);
-        gasLimit = ethers.BigNumber.from("200000"); // Safe default for ethers v5
-        // For ethers v6, use: gasLimit = ethers.parseUnits("200000", "wei");
-      }
-      
-      // Create and send the transaction
-      const tx = await this.adminWallet.sendTransaction({
-        to: this.tokenAddress,
-        data: data,
-        gasLimit: gasLimit
-      });
-      
-      console.log(`Delegation transaction sent: ${tx.hash}`);
-      
-      // Wait for confirmation
-      const receipt = await tx.wait();
-      
-      return {
-        status: 'success',
-        method: 'standardDelegate',
-        txHash: receipt.transactionHash,
-        blockNumber: receipt.blockNumber
-      };
+
+      // Use delegateBySig for delegation
+      return await this.delegateVotesBySig(delegatorAddress, delegateeAddress);
     } catch (error) {
       console.error('Error delegating votes:', error);
-      
+
       // Special handling for reverted transactions
       if (error.message.includes('execution reverted')) {
         // This usually happens because the admin wallet doesn't have permission
         console.log('Delegation transaction reverted - likely a permission issue');
-        
+
         return {
           status: 'error',
           delegationError: true,
@@ -249,11 +176,71 @@ class BlockchainService {
           technicalError: error.message
         };
       }
-      
+
       throw new Error(`Failed to delegate votes: ${error.message}`);
     }
   }
-  
+
+  /**
+   * Delegate voting power using user's signature (meta-transaction)
+   * @param {string} delegatorAddress - Address delegating voting power
+   * @param {string} delegateeAddress - Address receiving voting power
+   * @returns {Promise<Object>} - Transaction details
+   */
+  async delegateVotesBySig(delegatorAddress, delegateeAddress) {
+    if (!this.blockchainEnabled) {
+      return { status: 'error', message: 'Blockchain features are disabled' };
+    }
+
+    console.log(`Attempting to delegate votes with meta-transaction (user signs, admin pays gas)...`);
+
+    try {
+      const nonce = await this.tokenContract.nonces(delegatorAddress);
+      const expiry = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+
+      const domain = await this.getDomainData();
+      const types = {
+        Delegation: [
+          { name: 'delegatee', type: 'address' },
+          { name: 'nonce', type: 'uint256' },
+          { name: 'expiry', type: 'uint256' }
+        ]
+      };
+      const value = { delegatee: delegateeAddress, nonce: nonce.toString(), expiry: expiry.toString() };
+      const signature = await this.adminWallet._signTypedData(domain, types, value);
+      const sig = ethers.utils.splitSignature(signature);
+
+      const gasLimit = ethers.BigNumber.from("1000000"); // Increased gas limit to 1,000,000
+      const tokenWithSigner = this.tokenContract.connect(this.adminWallet);
+
+      try {
+        const gasEstimate = await tokenWithSigner.estimateGas.delegateBySig(delegateeAddress, nonce, expiry, sig.v, sig.r, sig.s);
+        const gasWithBuffer = gasEstimate.mul(12).div(10);
+        const tx = await tokenWithSigner.delegateBySig(delegateeAddress, nonce, expiry, sig.v, sig.r, sig.s, { gasLimit: gasWithBuffer });
+        const receipt = await tx.wait();
+
+        if (receipt.status === 1) {
+          return { txHash: receipt.transactionHash, success: true, method: 'meta-transaction' };
+        } else {
+          throw new Error("Transaction was mined but failed");
+        }
+      } catch (estimateError) {
+        console.warn(`Gas estimation failed for delegateBySig: ${estimateError.message}`);
+        const tx = await tokenWithSigner.delegateBySig(delegateeAddress, nonce, expiry, sig.v, sig.r, sig.s, { gasLimit });
+        const receipt = await tx.wait();
+
+        if (receipt.status === 1) {
+          return { txHash: receipt.transactionHash, success: true, method: 'meta-transaction' };
+        } else {
+          throw new Error("Transaction was mined but failed");
+        }
+      }
+    } catch (error) {
+      console.error('Error delegating votes by signature:', error);
+      throw new Error(`Failed to delegate votes by signature: ${error.message}`);
+    }
+  }
+
   /**
    * Get token balance for an address
    * @param {string} address - Wallet address to check
@@ -382,362 +369,122 @@ class BlockchainService {
         method: 'simulation'
       };
     }
-    
+
+    const voterAddress = userWallet.address;
+    console.log(`Attempting to vote on proposal ${proposalId} for voter ${voterAddress}, vote type: ${voteType}`);
+
     try {
-      // Extract the user's address from their wallet
-      const voterAddress = userWallet.address;
-      
-      console.log(`Attempting to vote on proposal ${proposalId} for voter ${voterAddress}, vote type: ${voteType}`);
-      
-      // VALIDATION STEP 1: Check if proposal is in active state
-      try {
-        const proposalState = await this.governorContract.state(proposalId);
-        console.log(`Proposal ${proposalId} is in state: ${proposalState} (0=Pending, 1=Active, 2=Canceled, 3=Defeated, 4=Succeeded, 5=Queued, 6=Expired, 7=Executed)`);
-        
-        // State 1 is Active in OpenZeppelin Governor
-        if (proposalState !== 1) {
-          const states = ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed'];
-          return {
-            success: false,
-            status: 'failed',
-            method: 'validation',
-            error: `Proposal is not in active state. Current state: ${states[proposalState]}`
-          };
-        }
-      } catch (stateError) {
-        console.error(`Error checking proposal state:`, stateError);
-        return {
-          success: false,
-          status: 'failed',
-          method: 'validation',
-          error: `Failed to check proposal state: ${stateError.message}`
-        };
-      }
-      
-      // VALIDATION STEP 2: Check if user has already voted
-      try {
-        // Try to get the user's vote receipt - throws an error if user hasn't voted
-        // This requires a custom getter but we can detect the revert patterns instead
-        
-        // Method 1: Call castVote with callStatic to see if it would revert
-        // If it reverts with 'already voted', then user has already voted
-        try {
-          // This won't actually submit a transaction, just simulate it
-          await this.governorContract.callStatic.castVote(proposalId, voteType, { from: voterAddress });
-          // If we get here, the call didn't revert, so user hasn't voted yet
-          console.log(`User ${voterAddress} has not voted on proposal ${proposalId} yet`);
-        } catch (callError) {
-          // Check if the error is due to already voted
-          if (callError.message.includes('already cast vote') || 
-              callError.message.includes('AlreadyCast') ||
-              callError.message.includes('already voted')) {
-            return {
-              success: false,
-              status: 'failed', 
-              method: 'validation',
-              error: 'User has already voted on this proposal'
-            };
-          }
-          // If it's another error, continue with the validation
-          console.log(`Vote simulation error not related to already voted: ${callError.message}`);
-        }
-        
-        // Method 2: As a backup, we can also check if user had voting power at snapshot
-        const snapshotBlock = await this.governorContract.proposalSnapshot(proposalId);
-        const votingPower = await this.governorContract.getVotes(voterAddress, snapshotBlock);
-        
-        console.log(`User ${voterAddress} had ${votingPower.toString()} voting power at snapshot block ${snapshotBlock}`);
-        
-        if (votingPower.isZero()) {
-          return {
-            success: false,
-            status: 'failed',
-            method: 'validation',
-            error: 'User had no voting power at the proposal snapshot. Make sure tokens were delegated before the proposal was created.'
-          };
-        }
-      } catch (validationError) {
-        console.error(`Error in vote validation:`, validationError);
-        // Continue with voting, as the validation might fail for non-critical reasons
-      }
-      
-      // All validation passed, proceed with voting
-      // We'll first try the meta-transaction approach, then fall back if needed
-      
-      // --- META-TRANSACTION ATTEMPT ---
-      try {
-        console.log(`Attempting to vote with meta-transaction (user signs, admin pays gas)...`);
-        
-        // Ensure proposalId is a BigNumber for proper encoding
-        const proposalIdBN = ethers.BigNumber.from(proposalId);
-        
-        // Step 1: Get the domain data for EIP-712 signature
-        let name;
-        try {
-          name = await this.governorContract.name();
-        } catch (nameError) {
-          console.warn('Could not get governor name, using default:', nameError.message);
-          name = 'Governor';
-        }
-        
-        const chainId = (await this.provider.getNetwork()).chainId;
-        console.log(`Creating vote signature for chain ID: ${chainId}`);
-        
-        // Create domain separator for EIP-712 signing
-        const domain = {
-          name: name,
-          version: '1',
-          chainId: chainId,
-          verifyingContract: this.governorAddress
-        };
+      await this.validateProposalState(proposalId);
+      console.log(`Proposal ${proposalId} is in active state`);
+      await this.validateUserVotingPower(proposalId, voterAddress);
+      console.log(`User ${voterAddress} has sufficient voting power`);
 
-        // Define the ballot type structure (following EIP-712)
-        const types = {
-          Ballot: [
-            { name: 'proposalId', type: 'uint256' },
-            { name: 'support', type: 'uint8' }
-          ]
-        };
-
-        // The vote data
-        const value = {
-          proposalId: proposalIdBN.toString(),
-          support: voteType
-        };
-        
-        console.log(`Creating signature for proposal ${proposalIdBN.toString()}, vote type: ${voteType}`);
-        console.log(`Using domain:`, domain);
-        
-        // Step 2: Have user sign the vote data
-        // This creates a cryptographic proof that the user authorized this specific vote
-        const signature = await userWallet._signTypedData(domain, types, value);
-        console.log(`Got signature: ${signature}`);
-        
-        // Step 3: Parse the signature into the r, s, v components needed by the contract
-        const sig = ethers.utils.splitSignature(signature);
-        console.log(`Split signature - v: ${sig.v}, r: ${sig.r}, s: ${sig.s}`);
-        
-        // Step 4: Submit the vote WITH the user's signature, FROM the admin wallet
-        // This lets the admin pay gas fees while the vote is cryptographically from the user
-        const gasLimit = ethers.BigNumber.from("500000"); // Higher gas limit for castVoteBySig
-
-        console.log(`Submitting vote by signature for user ${voterAddress}`);
-        
-        // Connect with admin wallet to ensure proper gas payment
-        const governorWithSigner = this.governorContract.connect(this.adminWallet);
-        
-        // Call the castVoteBySig function with careful error handling
-        let tx;
-        try {
-          // First try a gas estimation to catch early failures
-          const gasEstimate = await governorWithSigner.estimateGas.castVoteBySig(
-            proposalIdBN,
-            voteType,
-            sig.v,
-            sig.r,
-            sig.s
-          );
-          
-          console.log(`Gas estimate for castVoteBySig: ${gasEstimate.toString()}`);
-          
-          // Add buffer to gas estimate
-          const gasWithBuffer = gasEstimate.mul(12).div(10); // 20% buffer
-          
-          // Then send the actual transaction
-          tx = await governorWithSigner.castVoteBySig(
-            proposalIdBN,
-            voteType,
-            sig.v,
-            sig.r,
-            sig.s,
-            { gasLimit: gasWithBuffer }
-          );
-        } catch (estimateError) {
-          console.warn(`Gas estimation failed for castVoteBySig: ${estimateError.message}`);
-          console.log(`Trying with fixed gas limit...`);
-          
-          // If gas estimation fails, try with fixed gas limit
-          tx = await governorWithSigner.castVoteBySig(
-            proposalIdBN,
-            voteType,
-            sig.v,
-            sig.r,
-            sig.s,
-            { gasLimit: gasLimit }
-          );
-        }
-        
-        console.log(`Vote by signature transaction sent: ${tx.hash}`);
-        
-        // Wait for transaction to be mined
-        const receipt = await tx.wait();
-        console.log(`Vote by signature transaction confirmed in block ${receipt.blockNumber}`);
-        
-        // Check if transaction was successful
-        if (receipt.status === 1) {
-          console.log(`Vote successful with meta-transaction, tx hash: ${receipt.transactionHash}`);
-          return { 
-            txHash: receipt.transactionHash, 
-            success: true,
-            method: 'meta-transaction'
-          };
-        } else {
-          console.warn(`Vote transaction failed with status: ${receipt.status}`);
-          throw new Error("Transaction was mined but failed");
-        }
-      } catch (metaTxError) {
-        console.error(`Error in meta-transaction voting:`, metaTxError);
-        console.log(`Falling back to direct vote through user-signed transaction...`);
-        
-        // --- FALLBACK: USER DIRECT VOTE ---
-        // If meta-transaction fails, try normal castVote from user's wallet
-        try {
-          // Connect user wallet to the provider first
-          const userWithProvider = userWallet.connect(this.provider);
-          
-          // Create a contract instance connected to the user's wallet 
-          const governorWithUser = new ethers.Contract(
-            this.governorAddress,
-            this.governorAbi,
-            userWithProvider
-          );
-          
-          // Use the user's wallet, but have admin wallet handle the gas payment
-          const gasEstimate = await governorWithUser.estimateGas.castVote(proposalId, voteType);
-          const gasWithBuffer = gasEstimate.mul(13).div(10); // 30% buffer
-          
-          console.log(`Using direct user vote with gas limit ${gasWithBuffer.toString()}`);
-          
-          // Submit the transaction - user signs, but admin wallet address is set as fee payer
-          // This requires a network supporting fee delegation (like Arbitrum or specific testnets)
-          // Not all networks support this feature
-          const tx = await governorWithUser.castVote(proposalId, voteType, { 
-            gasLimit: gasWithBuffer
-          });
-          
-          console.log(`Direct vote transaction sent: ${tx.hash}`);
-          
-          // Wait for transaction to be mined
-          const receipt = await tx.wait();
-          
-          // Check if successful
-          if (receipt.status === 1) {
-            console.log(`Direct vote successful, tx hash: ${receipt.transactionHash}`);
-            return { 
-              txHash: receipt.transactionHash, 
-              success: true,
-              method: 'direct-user-vote'
-            };
-          } else {
-            throw new Error("User transaction was mined but failed");
-          }
-        } catch (userTxError) {
-          console.error(`User direct vote also failed:`, userTxError);
-          
-          // --- LAST RESORT: ADMIN SUBMITS VOTE ---
-          // As a last resort, submit the vote from admin wallet 
-          // This is centralized but can be a fallback to ensure voting works
-          try {
-            console.log(`Attempting admin-assisted vote as last resort...`);
-            
-            // Try the admin fallback methods in order of preference
-            
-            // 1. Try castVoteFor if available (custom function that some contracts have)
-            if (typeof this.governorContract.castVoteFor === 'function') {
-              const tx = await this.governorContract.castVoteFor(
-                voterAddress, proposalId, voteType, { gasLimit: 300000 }
-              );
-              
-              console.log(`Admin-assisted vote transaction sent: ${tx.hash}`);
-              
-              // Wait for transaction completion
-              const receipt = await tx.wait();
-              
-              if (receipt.status === 1) {
-                return {
-                  txHash: receipt.transactionHash,
-                  success: true,
-                  method: 'admin-assisted',
-                  warningMessage: 'Used admin-assisted vote due to meta-transaction failure'
-                };
-              }
-            } else {
-              console.log(`No castVoteFor function available, trying simple admin vote...`);
-              
-              // 2. In emergency, cast vote as admin (this is centralized but ensures functionality)
-              // This should be clearly communicated to the user
-              const tx = await this.governorContract.castVote(proposalId, voteType, { 
-                gasLimit: 300000
-              });
-              
-              console.log(`Simple admin vote transaction sent: ${tx.hash}`);
-              
-              const receipt = await tx.wait();
-              
-              if (receipt.status === 1) {
-                return {
-                  txHash: receipt.transactionHash,
-                  success: true,
-                  method: 'admin-direct-vote',
-                  warningMessage: ''
-                };
-              }
-            }
-            
-            // We've exhausted all options, clean up the error message for display
-            const cleanError = metaTxError.message
-              .replace(/\[.*?\]/g, '')
-              .replace(/\{.*?\}/g, '')
-              .replace(/See:.*$/g, '')
-              .replace(/transaction=.*?,/g, '')
-              .replace(/receipt=.*?,/g, '')
-              .substring(0, 100);
-              
-            return {
-              success: false,
-              status: 'failed',
-              method: 'all-methods-failed',
-              error: `Could not process vote: ${cleanError}`
-            };
-          } catch (adminError) {
-            console.error('Admin fallback also failed:', adminError);
-            return {
-              success: false,
-              status: 'failed',
-              method: 'all-methods-failed',
-              error: `All voting methods failed. Original error: ${metaTxError.message}`
-            };
-          }
-        }
-      }
+      return await this.voteWithMetaTransaction(userWallet, proposalId, voteType);
     } catch (error) {
       console.error(`Error in voteOnProposal:`, error);
-      
-      // Check for specific error cases
-      if (error.message.includes('already voted') || error.message.includes('AlreadyCast')) {
-        return {
-          success: false,
-          status: 'failed',
-          method: 'simulation',
-          error: 'User has already voted on this proposal'
-        };
-      } else if (error.message.includes('execution reverted')) {
-        return {
-          success: false,
-          status: 'failed',
-          method: 'simulation',
-          error: 'Transaction was rejected by the blockchain'
-        };
-      }
-      
-      // Default error
-      return {
-        success: false,
-        status: 'failed',
-        method: 'simulation',
-        error: `Failed to vote: ${error.message}`
-      };
+      return this.handleVoteError(error);
     }
+  }
+
+  async validateProposalState(proposalId) {
+    const proposalState = await this.governorContract.state(proposalId);
+    console.log(`Proposal ${proposalId} is in state: ${proposalState} (0=Pending, 1=Active, 2=Canceled, 3=Defeated, 4=Succeeded, 5=Queued, 6=Expired, 7=Executed)`);
+
+    if (proposalState !== 1) {
+      const states = ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed'];
+      throw new Error(`Proposal is not in active state. Current state: ${states[proposalState]}`);
+    }
+  }
+
+  async validateUserVotingPower(proposalId, voterAddress) {
+    await this.simulateVote(proposalId, voterAddress);
+    await this.checkVotingPowerAtSnapshot(proposalId, voterAddress);
+  }
+
+  async simulateVote(proposalId, voterAddress) {
+    try {
+      const connectedContract = this.governorContract.connect(this.provider.getSigner(voterAddress));
+      await connectedContract.callStatic.castVote(proposalId, 1);
+      console.log(`User ${voterAddress} has not voted on proposal ${proposalId} yet`);
+    } catch (callError) {
+      if (callError.message.includes('already cast vote') || callError.message.includes('AlreadyCast') || callError.message.includes('already voted')) {
+        throw new Error('User has already voted on this proposal');
+      }
+      console.log(`Vote simulation error not related to already voted: ${callError.message}`);
+    }
+  }
+
+  async checkVotingPowerAtSnapshot(proposalId, voterAddress) {
+    const snapshotBlock = await this.governorContract.proposalSnapshot(proposalId);
+    console.log(`Snapshot block: ${snapshotBlock}`);
+    const votingPower = await this.governorContract.getVotes(voterAddress, snapshotBlock);
+
+    console.log(`User ${voterAddress} had ${votingPower.toString()} voting power at snapshot block ${snapshotBlock}`);
+
+    if (votingPower.isZero()) {
+      throw new Error('User had no voting power at the proposal snapshot. Make sure tokens were delegated before the proposal was created.');
+    }
+  }
+
+  async voteWithMetaTransaction(userWallet, proposalId, voteType) {
+    console.log(`Attempting to vote with meta-transaction (user signs, admin pays gas)...`);
+
+    const proposalIdBN = ethers.BigNumber.from(proposalId);
+    const domain = await this.getDomainData();
+    const types = {
+      Ballot: [
+        { name: 'proposalId', type: 'uint256' },
+        { name: 'support', type: 'uint8' }
+      ]
+    };
+    const value = { proposalId: proposalIdBN.toString(), support: voteType };
+    const signature = await userWallet._signTypedData(domain, types, value);
+    const sig = ethers.utils.splitSignature(signature);
+
+
+    const gasLimit = ethers.BigNumber.from("1000000"); // Increased gas limit to 1,000,000
+    const governorWithSigner = this.governorContract.connect(this.adminWallet);
+
+    try {
+      const gasEstimate = await governorWithSigner.estimateGas.castVoteBySig(proposalIdBN, voteType, sig.v, sig.r, sig.s);
+      const gasWithBuffer = gasEstimate.mul(12).div(10);
+      const tx = await governorWithSigner.castVoteBySig(proposalIdBN, voteType, sig.v, sig.r, sig.s, { gasLimit: gasWithBuffer });
+      const receipt = await tx.wait();
+
+      if (receipt.status === 1) {
+        return { txHash: receipt.transactionHash, success: true, method: 'meta-transaction' };
+      } else {
+        throw new Error("Transaction was mined but failed");
+      }
+    } catch (estimateError) {
+      console.warn(`Gas estimation failed for castVoteBySig: ${estimateError.message}`);
+      const tx = await governorWithSigner.castVoteBySig(proposalIdBN, voteType, sig.v, sig.r, sig.s, { gasLimit });
+      const receipt = await tx.wait();
+
+      if (receipt.status === 1) {
+        return { txHash: receipt.transactionHash, success: true, method: 'meta-transaction' };
+      } else {
+        throw new Error("Transaction was mined but failed");
+      }
+    }
+  }
+
+  async getDomainData() {
+    let name;
+    try {
+      name = await this.tokenContract.name();
+    } catch (nameError) {
+      console.warn('Could not get token name, using default:', nameError.message);
+      name = 'Token';
+    }
+
+    const chainId = (await this.provider.getNetwork()).chainId;
+    return {
+      name: name,
+      version: '1',
+      chainId: chainId,
+      verifyingContract: this.tokenAddress
+    };
   }
   
   /**
