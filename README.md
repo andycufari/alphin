@@ -51,6 +51,14 @@ PROPOSAL_MONITOR_INTERVAL=300000
 npm start
 ```
 
+
+## Smart Contracts
+
+- [Governor](https://explorer.sepolia.mantle.xyz/address/0xbDfd2277da682AC45F7236EBf435bac6c7A150B3)
+- [Token](https://explorer.sepolia.mantle.xyz/address/0x2506aFEF824c81df6E77780494E70C3563c300Eb)
+
+
+
 ## Architecture
 
 The bot follows a modular architecture:
