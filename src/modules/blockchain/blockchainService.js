@@ -813,7 +813,7 @@ class BlockchainService {
     try {
       // Get the current block number
       const currentBlock = await this.provider.getBlockNumber();
-      const fromBlock = Math.max(0, currentBlock - 10000); // Last 10,000 blocks
+      const fromBlock = Math.max(0, currentBlock - 8000); // Last 10,000 blocks
       
       // Get ProposalCreated events
       const filter = this.governorContract.filters.ProposalCreated();

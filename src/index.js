@@ -13,6 +13,7 @@ const GamificationService = require('./modules/gamification/gamificationService'
 const DatabaseService = require('./modules/database/databaseService');
 const ProposalMonitor = require('./modules/blockchain/proposalMonitor');
 const helpers = require('./utils/helpers');
+const BlockchainService = require('./modules/blockchain/blockchainService');
 
 // Initialize the bot
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
@@ -93,6 +94,13 @@ const proposalMonitor = new ProposalMonitor(
   bot,
   process.env.COMMUNITY_GROUP_ID
 );
+const blockchainService = new BlockchainService({
+  rpcUrl: process.env.BLOCKCHAIN_RPC_URL,
+  tokenAddress: process.env.TOKEN_ADDRESS,
+  governorAddress: process.env.GOVERNOR_ADDRESS,
+  adminPrivateKey: process.env.ADMIN_PRIVATE_KEY,
+  databaseService: databaseService // Asegúrate de pasar databaseService aquí
+});
 
 // Initialize command handler
 const commandHandler = new CommandHandler(
