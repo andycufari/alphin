@@ -300,13 +300,25 @@ class BlockchainService {
     const fullDescription = `# ${title}\n\n${description}`;
     
     try {
+      // Log the wallet address from which the transaction is being sent
+      console.log(`Sending transaction from wallet: ${this.adminWallet.address}`);
+
+      // Estimate gas limit for the transaction
+      const gasEstimate = await this.governorContract.estimateGas.propose(
+        targets,
+        values,
+        calldatas,
+        fullDescription
+      );
+      const gasLimit = gasEstimate.mul(12).div(10); // Add 20% buffer to gas estimate
+
       // Submit proposal to governor
       const tx = await this.governorContract.propose(
         targets,
         values,
         calldatas,
         fullDescription,
-        { gasLimit: 2000000 }
+        { gasLimit }
       );
       
       console.log(`Proposal transaction sent: ${tx.hash}`);
