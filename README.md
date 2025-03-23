@@ -4,6 +4,8 @@ Alphin is a Telegram bot that makes blockchain DAOs accessible to web2 users by 
 
 You can try Alphin on Telegram: https://t.me/AlphinDAO_bot with a test DAO 
 
+Here is a brief, visually-focused presentation on Alphin: https://docs.google.com/presentation/d/1FjVJ57L1Su0dOp_N_ezqZz4T8XPlwxKuOLsvtmXvgAw/edit?slide=id.g342bafa3fbe_0_66#slide=id.g342bafa3fbe_0_66
+
 ## Features
 
 - AI integration with OpenAI API
@@ -50,6 +52,14 @@ PROPOSAL_MONITOR_INTERVAL=300000
 ```
 npm start
 ```
+
+
+## Smart Contracts
+
+- [Governor](https://explorer.sepolia.mantle.xyz/address/0xbDfd2277da682AC45F7236EBf435bac6c7A150B3)
+- [Token](https://explorer.sepolia.mantle.xyz/address/0x2506aFEF824c81df6E77780494E70C3563c300Eb)
+
+
 
 ## Architecture
 
