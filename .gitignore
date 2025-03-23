@@ -5,7 +5,12 @@
 # Dependency directories
 node_modules/
 
-
+# Wallet files (contain encrypted private keys)
+wallets/*.json
+wallets/**/*.json
+*.wallet
+*.key
+*.pem
 
 # Database
 *.sqlite
