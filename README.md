@@ -1,6 +1,8 @@
-# Alfin DAO Bot
+# Alphin DAO Bot
 
-Alfin is a Telegram bot that makes blockchain DAOs accessible to web2 users by abstracting away the complexity of interacting with governance contracts.
+Alphin is a Telegram bot that makes blockchain DAOs accessible to web2 users by abstracting away the complexity of interacting with governance contracts. Deployed on Mantle.
+
+You can try Alphin on Telegram: https://t.me/AlphinDAO_bot with a test DAO 
 
 ## Features
 
@@ -13,6 +15,7 @@ Alfin is a Telegram bot that makes blockchain DAOs accessible to web2 users by a
 - User vote tracking
 - Proposal status monitoring
 - Automatic notifications for governance events
+- Makes interaction with DAOs fun!!!
 
 ## Recent Improvements
 
