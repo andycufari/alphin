@@ -1,36 +1,23 @@
 const { OpenAI } = require('openai');
+const basePrompt = require('../prompts/basePrompt');
 
 class AIService {
-  constructor(apiKey) {
+  constructor(apiKey, formatPrompt, ContextPrompt) {
     this.openai = new OpenAI({
       apiKey: apiKey
     });
-    
-    // Base system prompt for the DAO assistant
-    this.baseSystemPrompt = `You are Alphin, an AI assistant for a DAO (Decentralized Autonomous Organization) on Telegram.
-Your primary role is to help users participate in DAO governance through a user-friendly interface.
-
-Key facts about the Alphin DAO:
-- Users can join the DAO, create proposals, and vote on proposals
-- All blockchain interactions are handled by the bot (users don't need to pay gas fees)
-- Each user gets their own wallet managed by the bot and secured with a PIN
-- Tokens are used for governance (voting on proposals)
-- Users earn tokens by participating (voting, creating proposals)
-
-FORMATTING GUIDELINES:
-- Format your responses using Telegram's Markdown:
-  * Use *asterisks* for bold text
-  * Use _underscores_ for italic text
-  * Use \`backticks\` for inline code
-  * Do NOT use # for headings as Telegram doesn't support them
-- Use emojis liberally to make your responses engaging and friendly (💰 for tokens, 🗳️ for voting, 📝 for proposals, etc.)
-- Structure your responses with clear sections and bullet points
-- Keep responses concise but friendly
-
-When users ask about technical blockchain details, explain in simple terms with analogies.
-For specific actions like joining, voting, or creating proposals, direct users to use the bot's menu commands or buttons.`;
+    this.formatPrompt = formatPrompt;
+    this.ContextPrompt = ContextPrompt;
   }
-  
+
+  /**
+   * Combine base prompt with format and project-specific prompts
+   * @returns {string} - Combined prompt
+   */
+  getCombinedPrompt() {
+    return `${basePrompt}\n\n${telegramFormatPrompt}\n\n${alphinDAOPrompt}`;
+  }
+
   /**
    * Process a message and generate a response
    * @param {string} userMessage - The user's message
@@ -41,7 +28,7 @@ For specific actions like joining, voting, or creating proposals, direct users t
       const response = await this.openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
-          { role: "system", content: this.baseSystemPrompt },
+          { role: "system", content: this.getCombinedPrompt() },
           { role: "user", content: userMessage }
         ],
         max_tokens: 500
@@ -53,14 +40,14 @@ For specific actions like joining, voting, or creating proposals, direct users t
       return "I'm having trouble processing that right now. Please try again later.";
     }
   }
-  
+
   /**
    * Generate specific help for DAO topics
    * @param {string} topic - The help topic requested
    * @returns {Promise<string>} - The AI-generated help text
    */
   async generateDAOHelp(topic) {
-    const helpPrompt = `${this.baseSystemPrompt}
+    const helpPrompt = `${this.getCombinedPrompt()}
     
 A user is asking for help with the topic: "${topic}". Provide a clear, helpful explanation about Alphin DAO that would be valuable for someone using your DAO assistant.
 
@@ -88,7 +75,7 @@ Focus on practical guidance and keep the response reasonably brief.`;
       return "I'm having trouble generating help content right now. Please try again later.";
     }
   }
-  
+
   /**
    * Process a group mention and generate a response
    * @param {string} groupMessage - The message from the group chat
@@ -96,7 +83,7 @@ Focus on practical guidance and keep the response reasonably brief.`;
    * @returns {Promise<string>} - The AI-generated response for the group
    */
   async processGroupMention(groupMessage, groupContext) {
-    const groupPrompt = `${this.baseSystemPrompt}
+    const groupPrompt = `${this.getCombinedPrompt()}
     
 You've been mentioned in a group chat for the Alphin DAO. Here's some context about the DAO:
 ${groupContext}

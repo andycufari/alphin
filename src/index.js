@@ -15,6 +15,10 @@ const ProposalMonitor = require('./modules/blockchain/proposalMonitor');
 const helpers = require('./utils/helpers');
 const BlockchainService = require('./modules/blockchain/blockchainService');
 
+//Import Prompts
+const telegramFormatPrompt = require('./prompts/telegramFormatPrompt');
+const alphinDAOPrompt = require('./prompts/alphinDaoPrompt');
+
 // Initialize the bot
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
@@ -77,7 +81,7 @@ if (!fs.existsSync(walletDir)) {
 }
 
 // Initialize services
-const aiService = new AIService(process.env.OPENAI_API_KEY);
+const aiService = new AIService(process.env.OPENAI_API_KEY, telegramFormatPrompt,  alphinDAOPrompt);
 const blockchainManager = new BlockchainManager({
   rpcUrl: process.env.BLOCKCHAIN_RPC_URL,
   tokenAddress: process.env.TOKEN_ADDRESS,
