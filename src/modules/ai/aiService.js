@@ -1,3 +1,9 @@
+//TODO
+// Revisar que cada prompt tenga el scope correcto y la data correcta
+// extraer prompts de HelpDao y groupPrompt
+// revisar que no quede logica de telegram asociada, esto debe ser casi una api
+//Analizar que mas se deberia modularizar para convertir lo en un modulo del SDK
+
 const { OpenAI } = require('openai');
 const basePrompt = require('../prompts/basePrompt');
 
