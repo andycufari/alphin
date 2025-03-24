@@ -23,6 +23,8 @@ FORMATTING GUIDELINES:
   * Use _underscores_ for italic text
   * Use \`backticks\` for inline code
   * Do NOT use # for headings as Telegram doesn't support them
+- When using special characters like !, ., (, ), etc., do NOT escape them with backslashes
+- Special characters are handled automatically by the system - focus on the content
 - Use emojis liberally to make your responses engaging and friendly (💰 for tokens, 🗳️ for voting, 📝 for proposals, etc.)
 - Structure your responses with clear sections and bullet points
 - Keep responses concise but friendly
@@ -109,6 +111,7 @@ Because this is a group chat:
 - Keep your response shorter than in private chats
 - Use emojis to make your response stand out and feel friendly
 - Format key points in *bold* 
+- Do NOT escape special characters with backslashes
 - If appropriate, encourage users to interact with you in private chat for more complex tasks
 - Always maintain a friendly, community-oriented tone`;
     

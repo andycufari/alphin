@@ -1,4 +1,3 @@
-// TOKEN GOVERNOR FOR THE CRECIMIENTO HACKATON MARCH25
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
@@ -7,6 +6,12 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
+/**
+ * @title AlphinToken
+ * @dev A voting token with admin delegation capability for the Alphin DAO
+ * This is an extension of the standard ERC20Votes token with a special adminDelegateFor function
+ * that allows the contract owner to delegate votes on behalf of users.
+ */
 contract AlphinToken is ERC20, ERC20Permit, ERC20Votes, Ownable {
     // Add mapping to track admin-delegated addresses
     mapping(address => bool) public adminDelegatedAddresses;

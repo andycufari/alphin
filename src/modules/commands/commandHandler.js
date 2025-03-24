@@ -35,14 +35,20 @@ class CommandHandler {
   }
   
   /**
-   * Format text safely for Telegram markdown
+   * Safely format text for Markdown
    * @param {string} text - The text to format
-   * @returns {string} - Safely formatted text
+   * @param {boolean} escapeChars - Whether to escape special characters (required for MarkdownV2, not for Markdown)
+   * @returns {string} - Safely formatted markdown text
    */
-  safeMarkdown(text) {
+  safeMarkdown(text, escapeChars = false) {
     if (!text) return '';
     
-    // Escape characters that have special meaning in Markdown
+    // For regular Markdown mode, we should not escape characters as it causes double escaping
+    if (!escapeChars) {
+      return String(text);
+    }
+    
+    // Only escape characters for MarkdownV2 mode
     return String(text)
       .replace(/\_/g, '\\_')  // Escape underscores
       .replace(/\*/g, '\\*')  // Escape asterisks
@@ -149,6 +155,9 @@ class CommandHandler {
       
       await this.handleExecuteProposal(chatId, userId, proposalId);
     });
+    
+    // Add delegation command
+    this.bot.onText(/^\/delegate$/, this.handleManualDelegation.bind(this));
   }
   
   /**
@@ -288,6 +297,7 @@ class CommandHandler {
           );
           
           // Send welcome tokens - pass userId to check if admin
+          // Note: this now uses improved sendWelcomeTokens method that handles delegation better
           const result = await this.blockchain.sendWelcomeTokens(address, userId);
           
           // Update status message - tokens sent
@@ -393,8 +403,6 @@ class CommandHandler {
                   console.log(`Failed to send message to supergroup: ${innerError.message}`);
                 }
               }
-              
-              // No need to throw error here, the user has already joined successfully
             }
           }
         } catch (error) {
@@ -411,6 +419,113 @@ class CommandHandler {
     } catch (error) {
       console.error('Error in join process:', error);
       this.bot.sendMessage(chatId, `Error joining the DAO: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Handle manual delegation command
+   * This could be added to allow users to manually delegate their tokens if auto-delegation fails
+   * @param {Object} msg - Telegram message object
+   */
+  async handleManualDelegation(msg) {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    // Only process in private chat
+    if (msg.chat.type !== 'private') {
+      return this.bot.sendMessage(chatId, 'Please talk to me directly to manage token delegation.');
+    }
+    
+    try {
+      // Check if user is a DAO member
+      const hasWallet = await this.wallets.hasWallet(userId);
+      
+      if (!hasWallet) {
+        return this.bot.sendMessage(
+          chatId,
+          'You need to join the DAO first. Use /join to get started.'
+        );
+      }
+      
+      // Get user's address
+      const address = await this.wallets.getWalletAddress(userId);
+      
+      // Check current delegation status
+      const isDelegated = await this.blockchain.service.isTokenDelegated(address);
+      
+      if (isDelegated) {
+        return this.bot.sendMessage(
+          chatId,
+          'Your tokens are already delegated. You can vote on proposals now!'
+        );
+      }
+      
+      // Prompt for PIN to manually delegate
+      const message = await this.bot.sendMessage(
+        chatId,
+        'Your tokens need to be delegated to enable voting. Please enter your PIN to delegate tokens to yourself:',
+        { reply_markup: { force_reply: true } }
+      );
+      
+      // Setup PIN callback
+      this.textProcessor.setupAwaitingDelegationPin(userId, async (pin) => {
+        try {
+          // Show processing message
+          const statusMsg = await this.bot.sendMessage(
+            chatId,
+            '🔄 *Processing delegation request*\n\nStatus: Verifying credentials...',
+            { parse_mode: 'Markdown' }
+          );
+          
+          // Get user's wallet for signing
+          const userWallet = await this.wallets.decryptWallet(userId, pin);
+          
+          // Update status
+          await this.bot.editMessageText(
+            '🔄 *Processing delegation request*\n\nStatus: Credentials verified ✅\nStatus: Delegating tokens...',
+            { 
+              chat_id: chatId, 
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
+          
+          // Execute delegation with user wallet
+          const result = await this.blockchain.delegateTokens(address, address, { userWallet });
+          
+          if (result.success) {
+            await this.bot.editMessageText(
+              '✅ *Tokens Delegated Successfully*\n\nYour tokens are now delegated to yourself. You can now vote on proposals!',
+              { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id,
+                parse_mode: 'Markdown'
+              }
+            );
+          } else {
+            await this.bot.editMessageText(
+              `❌ *Delegation Failed*\n\nThere was an error delegating your tokens. Please try again later.\n\nError: ${result.error || 'Unknown error'}`,
+              { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id,
+                parse_mode: 'Markdown'
+              }
+            );
+          }
+        } catch (error) {
+          console.error('Error in manual delegation:', error);
+          this.bot.sendMessage(chatId, `Error delegating tokens: ${error.message}`);
+        }
+      });
+      
+      // Save message ID to delete it later (for security)
+      const state = this.textProcessor.getConversationState(userId);
+      state.messageToDelete = message.message_id;
+      this.textProcessor.setConversationState(userId, state);
+      
+    } catch (error) {
+      console.error('Error in manual delegation process:', error);
+      this.bot.sendMessage(chatId, `Error checking delegation status: ${error.message}`);
     }
   }
   

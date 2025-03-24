@@ -99,7 +99,7 @@ const blockchainService = new BlockchainService({
   tokenAddress: process.env.TOKEN_ADDRESS,
   governorAddress: process.env.GOVERNOR_ADDRESS,
   adminPrivateKey: process.env.ADMIN_PRIVATE_KEY,
-  databaseService: databaseService // Asegúrate de pasar databaseService aquí
+  databaseService: databaseService // Make sure to pass databaseService here
 });
 
 // Initialize command handler

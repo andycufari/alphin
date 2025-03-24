@@ -144,22 +144,21 @@ class TextProcessor {
       // Fix Markdown formatting before sending
       let sanitizedResponse = response;
       try {
-        // Ensure proper Markdown formatting by escaping special characters 
-        // and ensuring all formatting tags are properly closed
-        const markdownChars = ['\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!'];
-        markdownChars.forEach(char => {
-          if (char !== '*' && char !== '_' && char !== '`') { // Keep formatting characters
-            sanitizedResponse = sanitizedResponse.replace(new RegExp('\\' + char, 'g'), '\\' + char);
-          }
-        });
+        // Ensure proper Markdown formatting for Telegram
+        // We should NOT escape characters that are already correctly escaped in OpenAI's response
+        // Only ensure proper markdown tag closure
         
-        // Verify all formatting tags are properly closed
+        // Check for unclosed markdown tags
         const asteriskCount = (sanitizedResponse.match(/\*/g) || []).length;
         if (asteriskCount % 2 !== 0) {
           sanitizedResponse = sanitizedResponse.replace(/\*([^\*]*)$/g, '$1'); // Remove trailing *
         }
         
-        // Simple validation to check markdown is valid
+        const underscoreCount = (sanitizedResponse.match(/_/g) || []).length;
+        if (underscoreCount % 2 !== 0) {
+          sanitizedResponse = sanitizedResponse.replace(/_([^_]*)$/g, '$1'); // Remove trailing _
+        }
+        
         console.log(`[DEBUG] TextProcessor: Sending sanitized response`);
       } catch (err) {
         console.log(`[DEBUG] TextProcessor: Error sanitizing Markdown, falling back to plain text`);
@@ -168,17 +167,24 @@ class TextProcessor {
       
       bot.sendMessage(chatId, sanitizedResponse, { 
         reply_to_message_id: msg.message_id,
-        parse_mode: 'Markdown'
+        parse_mode: 'MarkdownV2'
       }).then(() => {
         console.log(`[DEBUG] TextProcessor: Response sent successfully`);
       }).catch(err => {
         console.error(`[ERROR] TextProcessor: Failed to send response: ${err.message}`);
-        // Fallback to plain text if Markdown fails
-        console.log(`[DEBUG] TextProcessor: Trying to send as plain text instead`);
-        bot.sendMessage(chatId, response.replace(/\*/g, '').replace(/_/g, ''), {
-          reply_to_message_id: msg.message_id
-        }).catch(fallbackErr => {
-          console.error(`[ERROR] TextProcessor: Even plain text failed: ${fallbackErr.message}`);
+        // Try with regular Markdown
+        bot.sendMessage(chatId, sanitizedResponse, {
+          reply_to_message_id: msg.message_id,
+          parse_mode: 'Markdown'
+        }).catch(err2 => {
+          console.error(`[ERROR] TextProcessor: Failed with Markdown too: ${err2.message}`);
+          // Fallback to plain text if all Markdown fails
+          console.log(`[DEBUG] TextProcessor: Trying to send as plain text instead`);
+          bot.sendMessage(chatId, response.replace(/\*/g, '').replace(/_/g, ''), {
+            reply_to_message_id: msg.message_id
+          }).catch(fallbackErr => {
+            console.error(`[ERROR] TextProcessor: Even plain text failed: ${fallbackErr.message}`);
+          });
         });
       });
     } catch (error) {

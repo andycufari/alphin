@@ -34,19 +34,35 @@ class BlockchainManager {
     }
     
     try {
-      // Transfer tokens from admin wallet to user
-      const txResult = await this.service.transferTokens(userAddress, welcomeAmount);
+      // Transfer tokens from admin wallet to user using improved method
+      const txResult = await this.service.sendWelcomeTokensWithDelegation(userAddress, welcomeAmount);
       console.log('Welcome tokens sent:', txResult);
       
-      // Try to delegate tokens, but don't fail if delegation fails
+      // Check delegation result
       let delegationSuccess = false;
-      try {
-        // Automatically delegate tokens to self to enable voting
-        await this.delegateTokens(userAddress, userAddress);
+      if (txResult.delegation && txResult.delegation.success) {
         delegationSuccess = true;
-      } catch (delegationError) {
-        console.error('Warning: Token delegation failed, but tokens were sent successfully:', delegationError);
-        // Continue without failing - user can delegate manually later
+        console.log(`Token delegation successful using method: ${txResult.delegation.method}`);
+      } else {
+        console.warn('Token delegation was not successful in initial attempt');
+        
+        // Try alternative delegation approach if first attempt failed
+        try {
+          // Attempt delegation again with a slight delay to ensure token transfer is fully processed
+          await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+          
+          console.log('Attempting fallback delegation...');
+          const delegationResult = await this.service.handleNewUserDelegation(userAddress);
+          delegationSuccess = delegationResult.success;
+          
+          if (delegationSuccess) {
+            console.log('Fallback delegation was successful');
+          } else {
+            console.warn('Fallback delegation also failed');
+          }
+        } catch (fallbackError) {
+          console.error('Error in fallback delegation:', fallbackError);
+        }
       }
       
       return {
@@ -66,12 +82,25 @@ class BlockchainManager {
    * Delegate tokens to enable voting
    * @param {string} delegatorAddress - The address delegating tokens
    * @param {string} delegateeAddress - The address receiving delegation
+   * @param {Object} options - Optional parameters
+   * @param {ethers.Wallet} options.userWallet - User's wallet for signing (if available)
    * @returns {Promise<Object>} - Delegation result
    */
-  async delegateTokens(delegatorAddress, delegateeAddress) {
+  async delegateTokens(delegatorAddress, delegateeAddress, options = {}) {
     try {
       console.log(`Attempting to delegate tokens from ${delegatorAddress} to ${delegateeAddress}`);
-      const result = await this.service.delegateVotes(delegatorAddress, delegateeAddress);
+      
+      let result;
+      // If user wallet is provided, use it for signing
+      if (options.userWallet) {
+        console.log('User wallet provided for delegation');
+        // Implement wallet-based delegation later
+        // This would involve getting the signature from the user's wallet
+        result = await this.service.delegateVotes(delegatorAddress, delegateeAddress);
+      } else {
+        // Otherwise use the standard delegation method
+        result = await this.service.delegateVotes(delegatorAddress, delegateeAddress);
+      }
       
       // Check if the delegation was successful
       if (result.status === 'success') {
