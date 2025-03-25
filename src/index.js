@@ -19,7 +19,7 @@ const BlockchainService = require('./modules/blockchain/blockchainService');
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
 // Store the bot username globally for use in handlers
-let BOT_USERNAME = 'AlphinDAO_bot'; // Default fallback
+let BOT_USERNAME = 'Default'; // Default fallback
 
 // Get bot info at startup to verify username
 bot.getMe().then(botInfo => {
@@ -27,7 +27,7 @@ bot.getMe().then(botInfo => {
   console.log(`[INFO] Bot name: ${botInfo.first_name}`);
   BOT_USERNAME = botInfo.username; // Set the actual username
   
-  if (botInfo.username !== 'AlphinDAO_bot') {
+  if (botInfo.username !== process.env.BOT_USERNAME) {
     console.log(`[WARNING] Bot username is @${botInfo.username}, but was expecting @AlphinDAO_bot. Updated to use actual username.`);
   }
 });
@@ -149,7 +149,7 @@ bot.on('message', (msg) => {
   if (msg.chat.type !== 'private' && msg.text) {
     console.log(`[DEBUG] Processing group message: "${msg.text}"`);
     console.log(`[DEBUG] Bot username check: includes @${BOT_USERNAME} = ${msg.text.includes('@' + BOT_USERNAME)}`);
-    
+    console.log(`Group ID: ${msg.chat.id}`);
     if (msg.reply_to_message) {
       console.log(`[DEBUG] This is a reply message. Reply to username: ${msg.reply_to_message.from?.username || 'undefined'}`);
     }
