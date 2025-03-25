@@ -32,6 +32,34 @@ class CommandHandler {
     this.communityGroupId = communityGroupId;
     
     this.registerCommands();
+    
+    // Registrar el manejador de callbacks
+    this.bot.on('callback_query', async (query) => {
+      try {
+        console.log('Received callback query:', query.data); // Añadir log
+        
+        const data = query.data;
+        const chatId = query.message.chat.id;
+        const userId = query.from.id;
+
+        if (data.startsWith('select_proposal_')) {
+          const proposalId = data.replace('select_proposal_', '');
+          await this.handleVoteSelection(proposalId, chatId, userId);
+        } else if (data.startsWith('cast_vote_')) {
+          const [proposalId, voteType] = data.replace('cast_vote_', '').split('_');
+          await this.handleCastVote(proposalId, parseInt(voteType), chatId, userId);
+        }
+
+        // Responder al callback query
+        await this.bot.answerCallbackQuery(query.id);
+      } catch (error) {
+        console.error('Error handling callback:', error);
+        await this.bot.answerCallbackQuery(query.id, {
+          text: 'Error procesando tu selección. Por favor intenta de nuevo.',
+          show_alert: true
+        });
+      }
+    });
   }
   
   /**
@@ -117,8 +145,10 @@ class CommandHandler {
       { command: 'balance', description: '💰 Check your token balance' },
       { command: 'proposal', description: '📝 Create a new proposal' },
       { command: 'proposals', description: '🗳️ View active proposals' },
+      { command: 'vote', description: '🗳️ Vote on a proposal' },
       { command: 'help', description: '❓ Get help' },
       { command: 'whatisdao', description: '🏛️ Learn about DAOs' }
+      
     ], { scope: { type: 'all_private_chats' } });
     
     // Limited commands for groups - only help and whatisdao
@@ -136,6 +166,7 @@ class CommandHandler {
     this.bot.onText(/^\/balance$/, this.handleCheckBalance.bind(this));
     this.bot.onText(/^\/help$/, this.handleHelp.bind(this));
     this.bot.onText(/^\/whatisdao$/, this.handleWhatIsDAO.bind(this));
+    this.bot.onText(/^\/vote$/, this.handleVote.bind(this));
     
     // Handle button callbacks
     this.bot.on('callback_query', this.handleCallbackQuery.bind(this));
@@ -588,8 +619,15 @@ class CommandHandler {
       });
       
     } catch (error) {
-      console.error('Error starting proposal creation:', error);
-      this.bot.sendMessage(chatId, `Error starting proposal creation: ${error.message}`);
+      if (error.message.includes('intrinsic gas too low')) {
+        await this.bot.sendMessage(
+          msg.chat.id,
+          '❌ Error: La red está congestionada. Por favor, intenta nuevamente en unos momentos.'
+        );
+      } else {
+        console.error('Error starting proposal creation:', error);
+        this.bot.sendMessage(chatId, `Error starting proposal creation: ${error.message}`);
+      }
     }
   }
   
@@ -2156,6 +2194,166 @@ ${isPrivateChat ? '\nReady to join? Just tap the "🔑 Join DAO" button to get s
       this.bot.sendMessage(
         chatId,
         'Sorry, there was an error retrieving the proposals. Please try again later.'
+      );
+    }
+  }
+
+  /**
+   * Handle the /vote command
+   * @param {Object} msg - Telegram message object
+   */
+  async handleVote(msg) {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    try {
+      // Verificar si hay propuestas activas
+      const activeProposals = await this.blockchain.getActiveProposals();
+      
+      if (!activeProposals || activeProposals.length === 0) {
+        await this.bot.sendMessage(
+          chatId,
+          '❌ *No hay propuestas activas para votar*\n\nUsa /proposals para ver todas las propuestas.',
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
+      // Crear botones para cada propuesta
+      const keyboard = activeProposals.map(proposal => [{
+        text: `📝 ${proposal.title || `Propuesta #${proposal.id.substring(0, 8)}`}`,
+        callback_data: `select_proposal_${proposal.id}`
+      }]);
+
+      await this.bot.sendMessage(
+        chatId,
+        '*🗳️ Selecciona la propuesta en la que quieres votar:*\n\n' +
+        'Elige una propuesta de la lista:',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: keyboard
+          }
+        }
+      );
+    } catch (error) {
+      console.error('Error handling vote command:', error);
+      await this.bot.sendMessage(
+        chatId,
+        '❌ Error al obtener las propuestas. Por favor intenta de nuevo.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
+
+  /**
+   * Handle vote selection for a specific proposal
+   * @param {string} proposalId - ID of the proposal
+   * @param {number} chatId - Telegram chat ID
+   * @param {number} userId - Telegram user ID
+   */
+  async handleVoteSelection(proposalId, chatId, userId) {
+    try {
+      console.log(`Handling vote selection for proposal ${proposalId}`); // Añadir log
+      await this.bot.sendMessage(
+        chatId,
+        '*¿Cómo quieres votar en esta propuesta?*\n\n' +
+        '✅ - A favor\n' +
+        '❌ - En contra\n' +
+        '⚪ - Abstención',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ A favor', callback_data: `cast_vote_${proposalId}_1` },
+                { text: '❌ En contra', callback_data: `cast_vote_${proposalId}_0` },
+                { text: '⚪ Abstención', callback_data: `cast_vote_${proposalId}_2` }
+              ]
+            ]
+          }
+        }
+      );
+    } catch (error) {
+      console.error('Error showing vote options:', error);
+      await this.bot.sendMessage(
+        chatId,
+        '❌ Error al mostrar opciones de voto. Por favor intenta de nuevo.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
+
+  /**
+   * Cast the actual vote
+   * @param {string} proposalId - ID of the proposal
+   * @param {number} voteType - Type of vote (0=against, 1=for, 2=abstain)
+   * @param {number} chatId - Telegram chat ID
+   * @param {number} userId - Telegram user ID
+   */
+  async handleCastVote(proposalId, voteType, chatId, userId) {
+    try {
+      console.log(`Starting vote process for proposal ${proposalId}, vote type: ${voteType}`); // Añadir log
+      
+      // Solicitar PIN para firmar la transacción
+      const statusMsg = await this.bot.sendMessage(
+        chatId,
+        '🔐 *Por favor, ingresa tu PIN para confirmar tu voto*',
+        { parse_mode: 'Markdown' }
+      );
+
+      // Setup callback para cuando el usuario ingrese el PIN
+      this.textProcessor.setupAwaitingVotePin(userId, async (pin) => {
+        try {
+          // Obtener la wallet del usuario
+          const userWallet = await this.wallets.decryptWallet(userId, pin);
+          
+          // Actualizar mensaje de estado
+          await this.bot.editMessageText(
+            '🔄 *Procesando tu voto...*\n\nStatus: Verificando credenciales ✅\nStatus: Enviando voto...',
+            {
+              chat_id: chatId,
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
+
+          // Ejecutar el voto
+          const result = await this.blockchain.castVote(proposalId, userWallet, voteType);
+
+          if (result.success) {
+            await this.bot.editMessageText(
+              '✅ *¡Voto registrado con éxito!*\n\n' +
+              `Tu voto ha sido registrado en la blockchain.\n` +
+              `[Ver transacción](${this.getExplorerUrl(process.env.BLOCKCHAIN_NETWORK, result.txHash, 'tx')})`,
+              {
+                chat_id: chatId,
+                message_id: statusMsg.message_id,
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true
+              }
+            );
+          } else {
+            throw new Error(result.error || 'Error desconocido al votar');
+          }
+        } catch (error) {
+          console.error('Error casting vote:', error);
+          await this.bot.editMessageText(
+            `❌ *Error al votar*\n\n${this.sanitizeErrorForTelegram(error.message)}`,
+            {
+              chat_id: chatId,
+              message_id: statusMsg.message_id,
+              parse_mode: 'Markdown'
+            }
+          );
+        }
+      });
+    } catch (error) {
+      console.error('Error in vote handling:', error);
+      await this.bot.sendMessage(
+        chatId,
+        '❌ Error al procesar el voto. Por favor intenta de nuevo.',
+        { parse_mode: 'Markdown' }
       );
     }
   }
