@@ -59,13 +59,19 @@ class GamificationService {
         console.log(`Proposal was approved, increasing reward to ${amount}`);
       }
       
-      // Transfer tokens as reward
-      const result = await this.blockchain.service.transferTokens(userAddress, amount.toString());
+      // Usar sendWelcomeTokensWithDelegation en lugar de transferTokens
+      const result = await this.blockchain.service.sendWelcomeTokensWithDelegation(
+        userAddress,
+        amount.toString()
+      );
+      
+      console.log(`Reward transaction completed with delegation: ${result.txHash}`);
       
       return {
         success: true,
         amount: amount.toString(),
-        txHash: result.txHash
+        txHash: result.txHash,
+        delegation: result.delegation
       };
     } catch (error) {
       console.error('Error rewarding for proposal:', error);
@@ -109,6 +115,29 @@ class GamificationService {
         success: false,
         error: error.message
       };
+    }
+  }
+
+  async rewardProposalCreation(userAddress) {
+    try {
+        console.log(`Rewarding ${userAddress} for creating a proposal`);
+        const rewardAmount = "100"; // 100 tokens for creating a proposal
+        
+        // Usar el método que incluye delegación
+        const result = await this.blockchain.sendWelcomeTokensWithDelegation(
+            userAddress,
+            rewardAmount
+        );
+        
+        console.log(`Reward transaction completed: ${result.txHash}`);
+        if (result.delegation?.success) {
+            console.log(`Tokens automatically delegated for ${userAddress}`);
+        }
+        
+        return result;
+    } catch (error) {
+        console.error('Error rewarding proposal creation:', error);
+        throw error;
     }
   }
 }

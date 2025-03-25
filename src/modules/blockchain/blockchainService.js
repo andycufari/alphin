@@ -479,64 +479,63 @@ class BlockchainService {
     try {
       // First transfer tokens
       const transferResult = await this.transferTokens(toAddress, amount);
+      console.log(`Transfer result: ${JSON.stringify(transferResult, null, 2)}`);
       
-      if (transferResult.status !== 'success') {
-        throw new Error('Token transfer failed');
+      // Esperar confirmación del transfer
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Verificar balance después del transfer
+      const balanceAfterTransfer = await this.getTokenBalance(toAddress);
+      console.log(`Balance after transfer: ${balanceAfterTransfer}`);
+      
+      if (balanceAfterTransfer === '0') {
+        throw new Error('Token transfer failed - balance is still 0');
       }
       
-      console.log(`Tokens transferred successfully to ${toAddress}`);
-      
-      // Then attempt delegation
+      // Intentar delegación
       let delegationResult = {
         success: false,
         attempted: true
       };
       
       try {
-        // Check if contract has adminDelegateFor method
-        if (typeof this.tokenContract.adminDelegateFor === 'function') {
-          console.log(`Using adminDelegateFor for ${toAddress}`);
-          const gasEstimate = await this.tokenContract.estimateGas.adminDelegateFor(
-            toAddress, toAddress
-          );
-          const gasLimit = gasEstimate.mul(12).div(10);
+        // Intentar delegación hasta 3 veces
+        for (let i = 0; i < 3; i++) {
+          if (i > 0) {
+            console.log(`Retrying delegation attempt ${i + 1}/3...`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
           
-          const tx = await this.tokenContract.adminDelegateFor(
-            toAddress, toAddress, { gasLimit }
-          );
-          
-          const receipt = await tx.wait();
-          
-          delegationResult = {
-            success: true,
-            method: 'admin-direct',
-            txHash: receipt.transactionHash
-          };
-        } else {
-          // Otherwise use the normal delegation method
           const result = await this.delegateVotes(toAddress, toAddress);
-          delegationResult = {
-            success: result.status === 'success',
-            method: result.method || 'unknown',
-            txHash: result.txHash
-          };
+          const isDelegated = await this.isTokenDelegated(toAddress);
+          
+          if (isDelegated) {
+            delegationResult = {
+              success: true,
+              method: 'admin-direct',
+              txHash: result.txHash,
+              attempt: i + 1
+            };
+            break;
+          }
         }
       } catch (delegationError) {
-        console.warn(`Delegation failed but tokens were sent: ${delegationError.message}`);
-        delegationResult = {
-          success: false,
-          error: delegationError.message
-        };
+        console.error('All delegation attempts failed:', delegationError);
+        delegationResult.error = delegationError.message;
       }
       
-      // Return combined result
-      return {
+      // Return combined result with detailed logging
+      const finalResult = {
         status: 'success',
         txHash: transferResult.txHash,
         blockNumber: transferResult.blockNumber,
         amount: amount,
         delegation: delegationResult
       };
+      
+      console.log('Final transaction result:', JSON.stringify(finalResult, null, 2));
+      
+      return finalResult;
     } catch (error) {
       console.error('Error sending tokens with delegation:', error);
       return {

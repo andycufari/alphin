@@ -1,5 +1,6 @@
 const BlockchainService = require('./blockchainService');
 const ethers = require('ethers');
+const { BigNumber } = require('ethers');
 
 class BlockchainManager {
   /**
@@ -34,43 +35,64 @@ class BlockchainManager {
     }
     
     try {
+      // Log initial token balance
+      const initialBalance = await this.service.getTokenBalance(userAddress);
+      console.log(`Initial token balance for ${userAddress}: ${initialBalance}`);
+
       // Transfer tokens from admin wallet to user using improved method
       const txResult = await this.service.sendWelcomeTokensWithDelegation(userAddress, welcomeAmount);
-      console.log('Welcome tokens sent:', txResult);
+      console.log('Welcome tokens sent:', JSON.stringify(txResult, null, 2));
       
       // Check delegation result
       let delegationSuccess = false;
       if (txResult.delegation && txResult.delegation.success) {
         delegationSuccess = true;
         console.log(`Token delegation successful using method: ${txResult.delegation.method}`);
+        
+        // Verify delegation status
+        const isDelegated = await this.service.isTokenDelegated(userAddress);
+        console.log(`Delegation verification: ${isDelegated ? 'Successfully delegated' : 'Delegation verification failed'}`);
+        
       } else {
         console.warn('Token delegation was not successful in initial attempt');
+        console.log('Delegation result:', JSON.stringify(txResult.delegation, null, 2));
         
         // Try alternative delegation approach if first attempt failed
         try {
-          // Attempt delegation again with a slight delay to ensure token transfer is fully processed
           await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
           
           console.log('Attempting fallback delegation...');
           const delegationResult = await this.service.handleNewUserDelegation(userAddress);
           delegationSuccess = delegationResult.success;
           
+          // Log detailed fallback result
+          console.log('Fallback delegation result:', JSON.stringify(delegationResult, null, 2));
+          
           if (delegationSuccess) {
             console.log('Fallback delegation was successful');
+            // Double check delegation status
+            const isDelegated = await this.service.isTokenDelegated(userAddress);
+            console.log(`Final delegation status: ${isDelegated ? 'Confirmed' : 'Failed'}`);
           } else {
             console.warn('Fallback delegation also failed');
           }
         } catch (fallbackError) {
           console.error('Error in fallback delegation:', fallbackError);
+          console.error('Stack trace:', fallbackError.stack);
         }
       }
+
+      // Log final token balance
+      const finalBalance = await this.service.getTokenBalance(userAddress);
+      console.log(`Final token balance for ${userAddress}: ${finalBalance}`);
       
       return {
         success: true,
         amount: welcomeAmount,
         txHash: txResult.txHash,
         isAdmin: isAdmin,
-        delegationSuccess: delegationSuccess
+        delegationSuccess: delegationSuccess,
+        finalBalance: finalBalance
       };
     } catch (error) {
       console.error('Error sending welcome tokens:', error);
@@ -132,6 +154,36 @@ class BlockchainManager {
    */
   async createProposal(proposal, userWallet) {
     try {
+      const address = userWallet.address;
+      
+      // Verificar balance y delegación
+      const balance = await this.service.getTokenBalance(address);
+      console.log(`User balance before proposal creation: ${balance}`);
+      
+      const isDelegated = await this.service.isTokenDelegated(address);
+      console.log(`Delegation status before proposal: ${isDelegated ? 'Delegated' : 'Not delegated'}`);
+      
+      if (!isDelegated) {
+        console.log(`Tokens not delegated for ${address}, attempting automatic delegation...`);
+        try {
+          const delegationResult = await this.service.adminDelegateFor(address, address);
+          console.log('Automatic delegation result:', delegationResult);
+          
+          // Esperar un bloque para asegurar que la delegación está confirmada
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          // Verificar delegación nuevamente
+          const isNowDelegated = await this.service.isTokenDelegated(address);
+          if (!isNowDelegated) {
+            throw new Error('Delegation verification failed after attempt');
+          }
+          console.log('Automatic delegation successful and verified');
+        } catch (delegationError) {
+          console.error('Delegation failed:', delegationError);
+          throw new Error('Tokens must be delegated before creating proposals. Please try again or contact support.');
+        }
+      }
+
       const formattedProposal = {
         title: proposal.title,
         description: proposal.description,
@@ -140,8 +192,11 @@ class BlockchainManager {
         calldatas: ["0x"] // Empty calldata for simple proposals
       };
       
-      // Create the proposal using admin wallet (paying gas fees)
-      const result = await this.service.createProposal(formattedProposal);
+      const gasLimit = BigNumber.from("2000000"); // Aumentado a 2M
+      
+      const result = await this.service.createProposal(formattedProposal, {
+        gasLimit: gasLimit
+      });
       
       return {
         success: true,
