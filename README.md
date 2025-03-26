@@ -6,6 +6,8 @@ You can try Alphin on Telegram: https://t.me/AlphinDAO_bot with a test DAO
 
 Here is a brief, visually-focused presentation on Alphin: https://docs.google.com/presentation/d/1FjVJ57L1Su0dOp_N_ezqZz4T8XPlwxKuOLsvtmXvgAw/edit?slide=id.g342bafa3fbe_0_66#slide=id.g342bafa3fbe_0_66
 
+Additionally, Alphin is set to evolve into an open-source SDK for crypto bots, allowing users to add their own modules and customize functionality according to their needs.
+
 ## Features
 
 - AI integration with OpenAI API
