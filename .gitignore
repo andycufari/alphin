@@ -33,6 +33,7 @@ pids/
 *.swp
 *.swo
 
+
 # OS generated files
 .DS_Store
 .DS_Store?
@@ -45,3 +46,7 @@ lib/openzeppelin-contracts
 oz-tree.txt
 package-lock.json
 .env.example
+
+#Foundry
+cache_forge/
+out/

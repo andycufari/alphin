@@ -1,6 +1,8 @@
 /**
  * Text processor for handling natural language interactions
  */
+const logger = require('../../utils/logger');
+
 class TextProcessor {
   /**
    * Create TextProcessor instance
@@ -21,6 +23,19 @@ class TextProcessor {
       AWAITING_PROPOSAL_PIN: 'awaiting_proposal_pin',
       AWAITING_VOTE_PIN: 'awaiting_vote_pin'
     };
+    
+    // Initialize the conversation state manager
+    const ConversationStateManager = require('./ConversationStateManager');
+    this.stateManager = new ConversationStateManager({
+      conversationStates: this.conversationStates,
+      STATES: this.STATES
+    });
+    
+    // Initialize the menu handler
+    const MenuHandler = require('./MenuHandler');
+    this.menuHandler = new MenuHandler();
+    
+    logger.info('TextProcessor', 'Initialized text processor');
   }
   
   /**
@@ -31,72 +46,86 @@ class TextProcessor {
   async processMessage(msg, bot) {
     const userId = msg.from.id;
     const chatId = msg.chat.id;
-    const messageText = msg.text;
+    const messageText = msg.text || '';
     
-    console.log(`Processing message from user ${userId}: ${messageText}`);
+    logger.info('TextProcessor', `Processing message from user ${userId}`, { 
+      chatId, 
+      messageText: messageText.substring(0, 50) + (messageText.length > 50 ? '...' : '')
+    });
+    
+    // Validate inputs
+    if (!bot) {
+      logger.error('TextProcessor', 'Bot instance is missing');
+      return;
+    }
+    
+    if (!messageText) {
+      logger.debug('TextProcessor', 'Empty message text, skipping processing');
+      return;
+    }
     
     // Handle menu button actions
-    if (messageText === '🔑 Join DAO') {
-      const joinCommand = { ...msg, text: '/join' };
-      return bot.emit('message', joinCommand);
-    }
-    
-    if (messageText === '📝 Create Proposal') {
-      const proposalCommand = { ...msg, text: '/proposal' };
-      return bot.emit('message', proposalCommand);
-    }
-    
-    if (messageText === '🗳️ View Proposals') {
-      const proposalsCommand = { ...msg, text: '/proposals' };
-      return bot.emit('message', proposalsCommand);
-    }
-    
-    if (messageText === '💰 Check Balance') {
-      const balanceCommand = { ...msg, text: '/balance' };
-      return bot.emit('message', balanceCommand);
-    }
-    
-    if (messageText === '❓ Help' || messageText === '❓ What is a DAO?') {
-      const helpCommand = { ...msg, text: '/help' };
-      return bot.emit('message', helpCommand);
-    }
-    
-    if (messageText === '🏁 Back to Start') {
-      const startCommand = { ...msg, text: '/start' };
-      return bot.emit('message', startCommand);
+    try {
+      if (this.menuHandler.processMenuButton(msg, bot)) {
+        logger.debug('TextProcessor', 'Menu button processed', { button: messageText });
+        return; // Menu button was processed, exit early
+      }
+    } catch (menuError) {
+      logger.error('TextProcessor', 'Error processing menu button', menuError);
     }
     
     // Get current state for this user
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
+    logger.debug('TextProcessor', `User state: ${state.state}`, { userId, stateData: state.data });
     
     // Process based on conversation state
-    if (state.state === this.STATES.AWAITING_PIN) {
-      return this.handlePinInput(userId, chatId, messageText, bot);
-    }
-    
-    if (state.state === this.STATES.CREATING_PROPOSAL_TITLE) {
-      return this.handleProposalTitleInput(userId, chatId, messageText, bot);
-    }
-    
-    if (state.state === this.STATES.CREATING_PROPOSAL_DESCRIPTION) {
-      return this.handleProposalDescriptionInput(userId, chatId, messageText, bot);
-    }
-    
-    if (state.state === this.STATES.AWAITING_PROPOSAL_PIN) {
-      return this.handleProposalPinInput(userId, chatId, messageText, bot);
-    }
-    
-    if (state.state === this.STATES.AWAITING_VOTE_PIN) {
-      return this.handleVotePinInput(userId, chatId, messageText, bot);
-    }
-    
-    // Default: process with AI
     try {
-      const response = await this.ai.processMessage(messageText);
-      bot.sendMessage(chatId, response);
-    } catch (error) {
-      console.error('Error processing message with AI:', error);
-      bot.sendMessage(chatId, 'Sorry, I\'m having trouble processing your message right now. Please try again with Alphin DAO assistant later.');
+      if (state.state === this.STATES.AWAITING_PIN) {
+        logger.debug('TextProcessor', 'Handling PIN input');
+        return this.handlePinInput(userId, chatId, messageText, bot);
+      }
+      
+      if (state.state === this.STATES.CREATING_PROPOSAL_TITLE) {
+        logger.debug('TextProcessor', 'Handling proposal title input');
+        return this.handleProposalTitleInput(userId, chatId, messageText, bot);
+      }
+      
+      if (state.state === this.STATES.CREATING_PROPOSAL_DESCRIPTION) {
+        logger.debug('TextProcessor', 'Handling proposal description input');
+        return this.handleProposalDescriptionInput(userId, chatId, messageText, bot);
+      }
+      
+      if (state.state === this.STATES.AWAITING_PROPOSAL_PIN) {
+        logger.debug('TextProcessor', 'Handling proposal PIN input');
+        return this.handleProposalPinInput(userId, chatId, messageText, bot);
+      }
+      
+      if (state.state === this.STATES.AWAITING_VOTE_PIN) {
+        logger.debug('TextProcessor', 'Handling vote PIN input');
+        return this.handleVotePinInput(userId, chatId, messageText, bot);
+      }
+      
+      // Default: process with AI
+      logger.debug('TextProcessor', 'Processing with AI service');
+      try {
+        const response = await this.ai.processMessage(messageText);
+        logger.debug('TextProcessor', 'AI response received', { 
+          responseLength: response ? response.length : 0 
+        });
+        
+        await bot.sendMessage(chatId, response);
+        logger.debug('TextProcessor', 'Response sent successfully');
+      } catch (aiError) {
+        logger.error('TextProcessor', 'Error processing message with AI', aiError);
+        await bot.sendMessage(chatId, 'Sorry, I\'m having trouble processing your message right now. Please try again with Alphin DAO assistant later.');
+      }
+    } catch (stateError) {
+      logger.error('TextProcessor', 'Error processing message state', stateError);
+      try {
+        await bot.sendMessage(chatId, 'Sorry, something went wrong while processing your message. Please try again.');
+      } catch (sendError) {
+        logger.error('TextProcessor', 'Failed to send error message', sendError);
+      }
     }
   }
   
@@ -199,7 +228,7 @@ class TextProcessor {
    * @param {Object} bot - Telegram bot instance
    */
   async handlePinInput(userId, chatId, pin, bot) {
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
     
     // Delete PIN message for security
     try {
@@ -209,19 +238,15 @@ class TextProcessor {
     }
     
     // Execute the callback associated with PIN input
-    if (state.callback) {
-      try {
-        await state.callback(pin);
-      } catch (error) {
-        console.error('Error in PIN callback:', error);
-        bot.sendMessage(chatId, `Error: ${error.message}`);
-      }
-    } else {
-      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over with your Alphin DAO request.');
+    try {
+      await this.stateManager.executeCallback(userId, pin);
+    } catch (error) {
+      console.error('Error in PIN callback:', error);
+      bot.sendMessage(chatId, `Error: ${error.message}`);
     }
     
     // Reset state
-    this.resetConversationState(userId);
+    this.stateManager.resetState(userId);
   }
   
   /**
@@ -233,10 +258,10 @@ class TextProcessor {
    */
   async handleProposalTitleInput(userId, chatId, title, bot) {
     // Store title and prompt for description
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
     state.proposalTitle = title;
     state.state = this.STATES.CREATING_PROPOSAL_DESCRIPTION;
-    this.setConversationState(userId, state);
+    this.stateManager.setState(userId, state);
     
     bot.sendMessage(
       chatId, 
@@ -253,10 +278,10 @@ class TextProcessor {
    */
   async handleProposalDescriptionInput(userId, chatId, description, bot) {
     // Store description and prompt for PIN
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
     state.proposalDescription = description;
     state.state = this.STATES.AWAITING_PROPOSAL_PIN;
-    this.setConversationState(userId, state);
+    this.stateManager.setState(userId, state);
     
     const message = await bot.sendMessage(
       chatId, 
@@ -266,7 +291,7 @@ class TextProcessor {
     
     // Store message ID to delete it later (for security)
     state.messageToDelete = message.message_id;
-    this.setConversationState(userId, state);
+    this.stateManager.setState(userId, state);
   }
   
   /**
@@ -277,7 +302,7 @@ class TextProcessor {
    * @param {Object} bot - Telegram bot instance
    */
   async handleProposalPinInput(userId, chatId, pin, bot) {
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
     
     // Delete PIN message for security
     try {
@@ -301,7 +326,7 @@ class TextProcessor {
     }
     
     // Reset state
-    this.resetConversationState(userId);
+    this.stateManager.resetState(userId);
   }
   
   /**
@@ -312,7 +337,7 @@ class TextProcessor {
    * @param {Object} bot - Telegram bot instance
    */
   async handleVotePinInput(userId, chatId, pin, bot) {
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
     
     // Delete PIN message for security
     try {
@@ -322,19 +347,15 @@ class TextProcessor {
     }
     
     // Process vote with PIN
-    if (state.callback) {
-      try {
-        await state.callback(pin);
-      } catch (error) {
-        console.error('Error in vote submission:', error);
-        bot.sendMessage(chatId, `Error casting your Alphin DAO vote: ${error.message}`);
-      }
-    } else {
-      bot.sendMessage(chatId, 'Sorry, I\'ve lost track of what we were doing. Please start over with your Alphin DAO voting process.');
+    try {
+      await this.stateManager.executeCallback(userId, pin);
+    } catch (error) {
+      console.error('Error in vote submission:', error);
+      bot.sendMessage(chatId, `Error casting your Alphin DAO vote: ${error.message}`);
     }
     
     // Reset state
-    this.resetConversationState(userId);
+    this.stateManager.resetState(userId);
   }
   
   /**
@@ -343,10 +364,7 @@ class TextProcessor {
    * @param {Function} callback - Function to call with PIN
    */
   setupAwaitingPin(userId, callback) {
-    const state = this.getConversationState(userId);
-    state.state = this.STATES.AWAITING_PIN;
-    state.callback = callback;
-    this.setConversationState(userId, state);
+    this.stateManager.setupAwaitingPin(userId, callback);
   }
   
   /**
@@ -356,10 +374,10 @@ class TextProcessor {
    */
   setupCreatingProposal(userId, callback) {
     // Initialize state for proposal creation
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
     state.state = this.STATES.CREATING_PROPOSAL_TITLE;
     state.data = {}; // Reset any existing data
-    this.setConversationState(userId, state);
+    this.stateManager.setState(userId, state);
     
     // Store the callback for later use
     this.proposalCallbacks[userId] = callback;
@@ -371,10 +389,10 @@ class TextProcessor {
    * @param {Function} callback - Function to call with PIN
    */
   setupAwaitingVotePin(userId, callback) {
-    const state = this.getConversationState(userId);
+    const state = this.stateManager.getState(userId);
     state.state = this.STATES.AWAITING_VOTE_PIN;
     state.callback = callback;
-    this.setConversationState(userId, state);
+    this.stateManager.setState(userId, state);
   }
   
   /**
@@ -383,14 +401,7 @@ class TextProcessor {
    * @returns {Object} - Conversation state
    */
   getConversationState(userId) {
-    if (!this.conversationStates.has(userId)) {
-      this.conversationStates.set(userId, {
-        state: this.STATES.NORMAL,
-        data: {}
-      });
-    }
-    
-    return this.conversationStates.get(userId);
+    return this.stateManager.getState(userId);
   }
   
   /**
@@ -399,7 +410,7 @@ class TextProcessor {
    * @param {Object} state - New conversation state
    */
   setConversationState(userId, state) {
-    this.conversationStates.set(userId, state);
+    this.stateManager.setState(userId, state);
   }
   
   /**
@@ -407,10 +418,7 @@ class TextProcessor {
    * @param {string} userId - Telegram user ID
    */
   resetConversationState(userId) {
-    this.conversationStates.set(userId, {
-      state: this.STATES.NORMAL,
-      data: {}
-    });
+    this.stateManager.resetState(userId);
   }
 }
 

@@ -2,6 +2,8 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
+const logger = require('./utils/logger');
+
 
 // Import modules
 const AIService = require('./modules/ai/aiService');
@@ -28,9 +30,25 @@ bot.getMe().then(botInfo => {
   BOT_USERNAME = botInfo.username; // Set the actual username
   
   if (botInfo.username !== process.env.BOT_USERNAME) {
-    console.log(`[WARNING] Bot username is @${botInfo.username}, but was expecting @AlphinDAO_bot. Updated to use actual username.`);
+    console.log(`[WARNING] Bot username is @${botInfo.username}, but was expecting @${process.env.BOT_USERNAME}. Updated to use actual username.`);
   }
 });
+
+//EXPERIMENTO PARA VER SI LOS WEBHOOK ESTAN ANDANDO MAL. BORRAR SI HACE FALTA
+// Add this to your startup code to clear any existing webhook
+async function startBot() {
+  try {
+    // Clear any existing webhook
+    await bot.deleteWebHook();
+    logger.info('Bot', 'Deleted existing webhook');
+    
+    // Start polling
+    bot.startPolling();
+    logger.info('Bot', 'Started polling');
+  } catch (error) {
+    logger.error('Bot', 'Error starting bot', error);
+  }
+}
 
 // Initialize database
 const db = new sqlite3.Database('./dao_bot.sqlite');
@@ -114,82 +132,110 @@ const commandHandler = new CommandHandler(
   process.env.COMMUNITY_GROUP_ID
 );
 
-// Handle direct messages that aren't commands
-bot.on('message', (msg) => {
-  // Skip command messages
-  if (msg.text && msg.text.startsWith('/')) return;
-  
-  // Add debug logging for all messages
-  console.log(`[DEBUG] Received message in chat type: ${msg.chat.type}`);
-  console.log(`[DEBUG] Chat ID: ${msg.chat.id}`);
-  if (msg.text) console.log(`[DEBUG] Message text: "${msg.text}"`);
-  if (msg.from) console.log(`[DEBUG] From user: ${msg.from.id} (${msg.from.username || 'no username'})`);
-  
-  // Handle button text messages in private chats
-  if (msg.chat.type === 'private' && msg.text) {
-    const text = msg.text.trim();
-    
-    // Handle button menu options
-    if (text === '🔑 Join DAO') {
-      return commandHandler.handleJoinDAO(msg);
-    } else if (text === '📝 Create Proposal') {
-      return commandHandler.handleCreateProposal(msg);
-    } else if (text === '💰 Check Balance') {
-      return commandHandler.handleCheckBalance(msg);
-    } else if (text === '❓ Help') {
-      return commandHandler.handleHelp(msg);
-    } else if (text === '❓ What is a DAO?') {
-      return commandHandler.handleWhatIsDAO(msg);
-    } else if (text === '🏁 Back to Start') {
-      return commandHandler.handleStart(msg);
-    }
+// Add connection status logging
+bot.on('polling_error', (error) => {
+  logger.error('Bot', 'Polling error occurred', error);
+});
+
+// Add a health check method
+bot.getConnectionStatus = async () => {
+  try {
+    const me = await bot.getMe();
+    logger.info('Bot', 'Connection check successful', { username: me.username });
+    return { connected: true, botInfo: me };
+  } catch (error) {
+    logger.error('Bot', 'Connection check failed', error);
+    return { connected: false, error: error.message };
   }
-  
-  // Handle group mentions
-  if (msg.chat.type !== 'private' && msg.text) {
-    console.log(`[DEBUG] Processing group message: "${msg.text}"`);
-    console.log(`[DEBUG] Bot username check: includes @${BOT_USERNAME} = ${msg.text.includes('@' + BOT_USERNAME)}`);
-    console.log(`Group ID: ${msg.chat.id}`);
-    if (msg.reply_to_message) {
-      console.log(`[DEBUG] This is a reply message. Reply to username: ${msg.reply_to_message.from?.username || 'undefined'}`);
-    }
+};
+
+
+
+// Process direct messages in private chat
+bot.on('message', async (msg) => {
+  try {
+    logger.trace('Bot', 'Received message', { 
+      messageId: msg.message_id,
+      chatId: msg.chat.id,
+      from: msg.from ? msg.from.id : 'unknown',
+      text: msg.text ? (msg.text.substring(0, 50) + (msg.text.length > 50 ? '...' : '')) : 'no text'
+    });
     
-    if (
-      msg.text.includes('@' + BOT_USERNAME) || 
-      msg.text.toLowerCase().includes('@' + BOT_USERNAME.toLowerCase()) ||
-      (msg.reply_to_message && msg.reply_to_message.from?.username === BOT_USERNAME)
-    ) {
-      console.log('[DEBUG] Group mention condition matched, forwarding to processGroupMention');
-      textProcessor.processGroupMention(msg, bot);
-      return;
-    } else {
-      console.log('[DEBUG] Message in group but NOT matched as mention');
-      if (msg.text.includes('@')) {
-        console.log(`[DEBUG] Contains @ symbol: ${msg.text}`);
-        // Log all @ mentions in the message to check for case sensitivity issues
-        const mentions = msg.text.match(/@\w+/g);
-        if (mentions) {
-          console.log(`[DEBUG] All mentions in message: ${JSON.stringify(mentions)}`);
-        }
+    // Check if it's a private chat
+    if (msg.chat.type === 'private') {
+      logger.debug('Bot', 'Processing private message', { chatId: msg.chat.id });
+      
+      // Verify textProcessor is available
+      if (!textProcessor) {
+        logger.error('Bot', 'textProcessor is not initialized', { chatId: msg.chat.id });
+        await bot.sendMessage(msg.chat.id, 'Sorry, the bot is not fully initialized yet. Please try again in a moment.');
+        return;
       }
+      
+      // Process the message
+      await textProcessor.processMessage(msg, bot);
+      logger.debug('Bot', 'Message processed successfully', { chatId: msg.chat.id });
+    } else if (msg.text && msg.text.includes('@' + BOT_USERNAME)) {
+      // Handle mentions in group chats
+      logger.debug('Bot', 'Processing group mention', { 
+        chatId: msg.chat.id,
+        text: msg.text.substring(0, 50) + (msg.text.length > 50 ? '...' : '')
+      });
+      
+      if (!textProcessor) {
+        logger.error('Bot', 'textProcessor is not initialized for group mention', { chatId: msg.chat.id });
+        return;
+      }
+      
+      await textProcessor.processGroupMention(msg, bot);
     }
-  }
-  
-  // Process direct messages in private chat
-  if (msg.chat.type === 'private') {
-    textProcessor.processMessage(msg, bot);
+  } catch (error) {
+    logger.error('Bot', 'Error processing message', {
+      error: error.message,
+      stack: error.stack,
+      messageId: msg.message_id,
+      chatId: msg.chat.id
+    });
+    
+    try {
+      // Attempt to notify the user of the error
+      await bot.sendMessage(msg.chat.id, 'Sorry, there was an error processing your message. Please try again later.');
+    } catch (sendError) {
+      logger.error('Bot', 'Failed to send error message', { error: sendError.message });
+    }
   }
 });
 
 // Handle deep links (for vote redirections)
 bot.onText(/\/start vote_(.+)_(.+)/, (msg, match) => {
-  const proposalId = match[1];
-  const voteType = match[2];
-  const userId = msg.from.id;
-  const chatId = msg.chat.id;
-  
-  if (msg.chat.type === 'private') {
-    commandHandler.handleVoteAction(chatId, userId, proposalId, voteType);
+  try {
+    const proposalId = match[1];
+    const voteType = match[2];
+    const userId = msg.from.id;
+    const chatId = msg.chat.id;
+    
+    logger.debug('Bot', 'Processing vote deep link', { 
+      proposalId, 
+      voteType, 
+      userId, 
+      chatId 
+    });
+    
+    if (msg.chat.type === 'private') {
+      if (!commandHandler) {
+        logger.error('Bot', 'commandHandler is not initialized for vote action', { chatId });
+        bot.sendMessage(chatId, 'Sorry, the bot is not fully initialized yet. Please try again in a moment.');
+        return;
+      }
+      
+      commandHandler.handleVoteAction(chatId, userId, proposalId, voteType);
+    }
+  } catch (error) {
+    logger.error('Bot', 'Error processing vote deep link', {
+      error: error.message,
+      stack: error.stack,
+      chatId: msg.chat.id
+    });
   }
 });
 
@@ -197,10 +243,33 @@ bot.onText(/\/start vote_(.+)_(.+)/, (msg, match) => {
 const monitoringInterval = process.env.PROPOSAL_MONITOR_INTERVAL || 300000; // 5 minutes default
 proposalMonitor.startMonitoring(parseInt(monitoringInterval));
 
-// Log startup with version info
-console.log(`Alphin DAO Bot v${process.env.npm_package_version || '1.0.0'} is running...`);
-console.log(`Connected to blockchain network: ${process.env.BLOCKCHAIN_NETWORK || 'Unknown'}`);
-console.log(`Proposal monitoring started with interval: ${monitoringInterval}ms`);
+// Call startBot to ensure webhook is cleared and polling is started
+startBot().then(() => {
+  // Log startup with version info
+  console.log(`Alphin DAO Bot v${process.env.npm_package_version || '1.0.0'} is running...`);
+  console.log(`Connected to blockchain network: ${process.env.BLOCKCHAIN_NETWORK || 'Unknown'}`);
+  console.log(`Proposal monitoring started with interval: ${monitoringInterval}ms`);
+}).catch(error => {
+  logger.error('Bot', 'Failed to start bot properly', error);
+});
+
+// Add a diagnostic command
+bot.onText(/\/status/, async (msg) => {
+  const chatId = msg.chat.id;
+  logger.info('Bot', 'Status command received', { chatId });
+  
+  try {
+    const status = await bot.getConnectionStatus();
+    bot.sendMessage(chatId, 
+      `Bot Status: ${status.connected ? '✅ Connected' : '❌ Disconnected'}\n` +
+      `Bot Username: ${status.connected ? status.botInfo.username : 'Unknown'}\n` +
+      `Time: ${new Date().toISOString()}`
+    );
+  } catch (error) {
+    logger.error('Bot', 'Error sending status message', error);
+    bot.sendMessage(chatId, 'Error checking bot status');
+  }
+});
 
 // Handle graceful shutdown
 process.on('SIGINT', () => {

@@ -34,5 +34,4 @@ contract AlphinGovernor is Governor, GovernorCountingSimple, GovernorVotes {
     ) public pure override returns (uint256) {
         return QUORUM_PERCENTAGE;
     }
-
 }

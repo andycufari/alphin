@@ -813,7 +813,10 @@ class BlockchainService {
     try {
       // Get the current block number
       const currentBlock = await this.provider.getBlockNumber();
-      const fromBlock = Math.max(0, currentBlock - 8000); // Last 10,000 blocks
+      // Reduce from 8000 to 5000 to stay well under the limit
+      const fromBlock = Math.max(0, currentBlock - 5000);
+      
+      console.log(`Querying active proposals from block ${fromBlock} to ${currentBlock}`);
       
       // Get ProposalCreated events
       const filter = this.governorContract.filters.ProposalCreated();
@@ -1002,7 +1005,6 @@ class BlockchainService {
         return [];
       }
       
-      // Get proposal created events from contract
       const governor = new ethers.Contract(
         this.governorAddress,
         this.governorAbi,
@@ -1012,9 +1014,13 @@ class BlockchainService {
       // Get filter for ProposalCreated events
       const filter = governor.filters.ProposalCreated();
       
-      // Get all events from the last 10000 blocks or from contract deployment
+      // Get current block number
       const currentBlock = await this.provider.getBlockNumber();
-      const fromBlock = Math.max(0, currentBlock - 10000);
+      
+      // IMPORTANT FIX: Limit the range to 5000 blocks to stay well under the 10,000 limit
+      const fromBlock = Math.max(0, currentBlock - 5000);
+      
+      console.log(`Querying proposals from block ${fromBlock} to ${currentBlock}`);
       
       const events = await governor.queryFilter(filter, fromBlock, 'latest');
       

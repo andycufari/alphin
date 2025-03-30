@@ -1,6 +1,9 @@
 /**
  * Command handler for Telegram bot
  */
+const logger = require('../../utils/logger');
+const handleJoinDAO = require('./handlers/handleJoinDAO');
+
 class CommandHandler {
   /**
    * Create CommandHandler instance
@@ -31,7 +34,9 @@ class CommandHandler {
     this.db = databaseService;
     this.communityGroupId = communityGroupId;
     
+    logger.info('CommandHandler', 'Initializing command handler');
     this.registerCommands();
+    logger.info('CommandHandler', 'Command handler initialized');
   }
   
   /**
@@ -104,51 +109,183 @@ class CommandHandler {
    * Register all command handlers
    */
   registerCommands() {
-    // Different command sets for private chats vs group chats
-    this.bot.setMyCommands([
-      { command: 'start', description: '🚀 Start interacting with the DAO' },
-      { command: 'join', description: '🔑 Join the DAO' },
-      { command: 'balance', description: '💰 Check your token balance' },
-      { command: 'proposal', description: '📝 Create a new proposal' },
-      { command: 'proposals', description: '🗳️ View active proposals' },
-      { command: 'help', description: '❓ Get help' },
-      { command: 'whatisdao', description: '🏛️ Learn about DAOs' }
-    ], { scope: { type: 'all_private_chats' } });
+    logger.info('CommandHandler', 'Registering bot commands');
     
-    // Limited commands for groups - only help and whatisdao
-    this.bot.setMyCommands([
-      { command: 'help', description: '❓ Get help with Alphin DAO' },
-      { command: 'whatisdao', description: '🏛️ Learn about Alphin DAO' },
-      { command: 'proposals', description: '🗳️ View active proposals' }
-    ], { scope: { type: 'all_group_chats' } });
+    // Different command sets for private chats vs group chats
+    try {
+      this.bot.setMyCommands([
+        { command: 'start', description: '🚀 Start interacting with the DAO' },
+        { command: 'join', description: '🔑 Join the DAO' },
+        { command: 'balance', description: '💰 Check your token balance' },
+        { command: 'proposal', description: '📝 Create a new proposal' },
+        { command: 'proposals', description: '🗳️ View active proposals' },
+        { command: 'help', description: '❓ Get help' },
+        { command: 'whatisdao', description: '🏛️ Learn about DAOs' },
+        { command: 'status', description: '🔍 Check bot status' }
+      ], { scope: { type: 'all_private_chats' } });
+      
+      // Limited commands for groups - only help and whatisdao
+      this.bot.setMyCommands([
+        { command: 'help', description: '❓ Get help with Alphin DAO' },
+        { command: 'whatisdao', description: '🏛️ Learn about Alphin DAO' },
+        { command: 'proposals', description: '🗳️ View active proposals' },
+        { command: 'status', description: '🔍 Check bot status' }
+      ], { scope: { type: 'all_group_chats' } });
+      
+      logger.info('CommandHandler', 'Command menus set successfully');
+    } catch (menuError) {
+      logger.error('CommandHandler', 'Error setting command menus', menuError);
+    }
     
     // Command handlers
-    this.bot.onText(/^\/start$/, this.handleStart.bind(this));
-    this.bot.onText(/^\/join$/, this.handleJoinDAO.bind(this));
-    this.bot.onText(/^\/proposal$/, this.handleCreateProposal.bind(this));
-    this.bot.onText(/^\/proposals$/, this.handleListProposals.bind(this));
-    this.bot.onText(/^\/balance$/, this.handleCheckBalance.bind(this));
-    this.bot.onText(/^\/help$/, this.handleHelp.bind(this));
-    this.bot.onText(/^\/whatisdao$/, this.handleWhatIsDAO.bind(this));
-    
-    // Handle button callbacks
-    this.bot.on('callback_query', this.handleCallbackQuery.bind(this));
-    
-    // Admin commands
-    this.bot.onText(/^\/execute(?:\s+([a-zA-Z0-9]+))?$/, async (msg, match) => {
-      const chatId = msg.chat.id;
-      const userId = msg.from.id;
-      const proposalId = match[1];
+    try {
+      this.bot.onText(/^\/start$/, (msg) => {
+        logger.debug('CommandHandler', 'Start command received', { 
+          userId: msg.from.id, 
+          chatId: msg.chat.id 
+        });
+        this.handleStart(msg);
+      });
       
-      if (!proposalId) {
-        return this.bot.sendMessage(
-          chatId,
-          'Please provide a proposal ID to execute. Usage: /execute [proposalId]'
-        );
-      }
+      this.bot.onText(/^\/join$/, (msg) => {
+        logger.debug('CommandHandler', 'Join command received', { 
+          userId: msg.from.id, 
+          chatId: msg.chat.id 
+        });
+        this.handleJoinDAO(msg);
+      });
       
-      await this.handleExecuteProposal(chatId, userId, proposalId);
-    });
+      this.bot.onText(/^\/proposal$/, (msg) => {
+        logger.debug('CommandHandler', 'Proposal command received', { 
+          userId: msg.from.id, 
+          chatId: msg.chat.id 
+        });
+        this.handleCreateProposal(msg);
+      });
+      
+      this.bot.onText(/^\/proposals$/, (msg) => {
+        logger.debug('CommandHandler', 'Proposals command received', { 
+          userId: msg.from.id, 
+          chatId: msg.chat.id 
+        });
+        this.handleListProposals(msg);
+      });
+      
+      this.bot.onText(/^\/balance$/, (msg) => {
+        logger.debug('CommandHandler', 'Balance command received', { 
+          userId: msg.from.id, 
+          chatId: msg.chat.id 
+        });
+        this.handleCheckBalance(msg);
+      });
+      
+      this.bot.onText(/^\/help$/, (msg) => {
+        logger.debug('CommandHandler', 'Help command received', { 
+          userId: msg.from.id, 
+          chatId: msg.chat.id 
+        });
+        this.handleHelp(msg);
+      });
+      
+      this.bot.onText(/^\/whatisdao$/, (msg) => {
+        logger.debug('CommandHandler', 'WhatIsDAO command received', { 
+          userId: msg.from.id, 
+          chatId: msg.chat.id 
+        });
+        this.handleWhatIsDAO(msg);
+      });
+      
+      // Add diagnostic command
+      this.bot.onText(/^\/status$/, async (msg) => {
+        const chatId = msg.chat.id;
+        logger.info('CommandHandler', 'Status command received', { chatId });
+        
+        try {
+          await this.bot.sendMessage(chatId, 'Checking bot status...');
+          
+          // Check bot connection
+          const me = await this.bot.getMe();
+          
+          // Check services
+          const servicesStatus = {
+            blockchain: !!this.blockchain,
+            wallets: !!this.wallets,
+            ai: !!this.ai,
+            textProcessor: !!this.textProcessor,
+            gamification: !!this.gamification,
+            database: !!this.db
+          };
+          
+          const statusMessage = 
+            `✅ Bot is online and responding\n` +
+            `Username: @${me.username}\n` +
+            `First name: ${me.first_name}\n\n` +
+            `Services status:\n` +
+            `- Blockchain: ${servicesStatus.blockchain ? '✅' : '❌'}\n` +
+            `- Wallets: ${servicesStatus.wallets ? '✅' : '❌'}\n` +
+            `- AI: ${servicesStatus.ai ? '✅' : '❌'}\n` +
+            `- Text Processor: ${servicesStatus.textProcessor ? '✅' : '❌'}\n` +
+            `- Gamification: ${servicesStatus.gamification ? '✅' : '❌'}\n` +
+            `- Database: ${servicesStatus.database ? '✅' : '❌'}\n\n` +
+            `Server time: ${new Date().toISOString()}`;
+          
+          await this.bot.sendMessage(chatId, statusMessage);
+          logger.info('CommandHandler', 'Status check completed successfully');
+        } catch (error) {
+          logger.error('CommandHandler', 'Error checking status', error);
+          await this.bot.sendMessage(chatId, 'Error checking bot status: ' + error.message);
+        }
+      });
+      
+      // Handle button callbacks
+      this.bot.on('callback_query', (query) => {
+        logger.debug('CommandHandler', 'Callback query received', { 
+          userId: query.from.id,
+          data: query.data
+        });
+        this.handleCallbackQuery(query);
+      });
+      
+      // Admin commands
+      this.bot.onText(/^\/execute(?:\s+([a-zA-Z0-9]+))?$/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const proposalId = match[1];
+        
+        logger.debug('CommandHandler', 'Execute command received', { 
+          userId, 
+          chatId, 
+          proposalId 
+        });
+        
+        if (!proposalId) {
+          return this.bot.sendMessage(
+            chatId,
+            'Please provide a proposal ID to execute. Usage: /execute [proposalId]'
+          );
+        }
+        
+        await this.handleExecuteProposal(chatId, userId, proposalId);
+      });
+      
+      logger.info('CommandHandler', 'Command handlers registered successfully');
+    } catch (registerError) {
+      logger.error('CommandHandler', 'Error registering command handlers', registerError);
+    }
+  }
+  
+  // Add this method to check if the bot is properly connected
+  async checkBotConnection() {
+    try {
+      const me = await this.bot.getMe();
+      logger.info('CommandHandler', 'Bot connection check successful', { 
+        username: me.username 
+      });
+      return true;
+    } catch (error) {
+      logger.error('CommandHandler', 'Bot connection check failed', error);
+      return false;
+    }
   }
   
   /**
@@ -226,194 +363,18 @@ class CommandHandler {
    * @param {Object} msg - Telegram message object
    */
   async handleJoinDAO(msg) {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const username = msg.from.username;
-    
-    // Only process private messages for actions requiring signing
-    if (msg.chat.type !== 'private') {
-      return this.bot.sendMessage(chatId, 'Please talk to me directly to join the DAO.');
-    }
-    
-    try {
-      // Check if user already has a wallet
-      const hasWallet = await this.wallets.hasWallet(userId);
-      
-      if (hasWallet) {
-        const address = await this.wallets.getWalletAddress(userId);
-        const balance = await this.blockchain.getTokenBalance(address);
-        
-        // Get blockchain explorer URL based on network
-        const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
-        const explorerUrl = this.getExplorerUrl(network, address);
-        
-        // Get the DAO group link from the .env file
-        const groupLink = process.env.DAO_GROUP_LINK;
-        
-        return this.bot.sendMessage(
-          chatId,
-          `You are already a member of the DAO!\n\nJoin us on our private channel to keep you updated: [Join DAO Group](${groupLink})\n\nYour wallet address: \`${address}\`\nYour token balance: ${balance} tokens\n\n[View on Block Explorer](${explorerUrl})`,
-          { parse_mode: 'Markdown' }
-        );
-      }
-      
-      // Prompt for PIN setup
-      const message = await this.bot.sendMessage(
-        chatId,
-        'To join the DAO, you need to set up a PIN to secure your wallet. This PIN will be used to sign transactions.\n\nPlease enter a PIN (4-8 digits):',
-        { reply_markup: { force_reply: true } }
-      );
-      
-      // Setup awaiting PIN state
-      this.textProcessor.setupAwaitingPin(userId, async (pin) => {
-        try {
-          // Send initial status message
-          const statusMsg = await this.bot.sendMessage(
-            chatId,
-            '🔄 *Processing your request*\n\nStatus: Creating your wallet...',
-            { parse_mode: 'Markdown' }
-          );
-          
-          // Create wallet for user
-          const address = await this.wallets.createWallet(userId, pin);
-          
-          // Update status message - wallet created
-          await this.bot.editMessageText(
-            '🔄 *Processing your request*\n\nStatus: Wallet created ✅\nStatus: Sending tokens to your wallet...',
-            { 
-              chat_id: chatId, 
-              message_id: statusMsg.message_id,
-              parse_mode: 'Markdown'
-            }
-          );
-          
-          // Send welcome tokens - pass userId to check if admin
-          const result = await this.blockchain.sendWelcomeTokens(address, userId);
-          
-          // Update status message - tokens sent
-          await this.bot.editMessageText(
-            '🔄 *Processing your request*\n\nStatus: Wallet created ✅\nStatus: Tokens sent ✅\nStatus: Setting up voting rights...',
-            { 
-              chat_id: chatId, 
-              message_id: statusMsg.message_id,
-              parse_mode: 'Markdown'
-            }
-          );
-          
-          // Get blockchain explorer URL based on network
-          const network = process.env.BLOCKCHAIN_NETWORK || 'sepolia';
-          const explorerUrl = this.getExplorerUrl(network, address);
-          const txExplorerUrl = this.getExplorerUrl(network, result.txHash, 'tx');
-          
-          // Add delegation note if it failed
-          let delegationNote = '';
-          let delegationStatus = 'Voting rights activated ✅';
-          
-          if (!result.delegationSuccess) {
-            delegationStatus = 'Voting rights setup failed ❌';
-            delegationNote = '\n\n⚠️ *Note:* Token delegation failed. You may need to manually delegate your tokens to vote on proposals. This is usually a temporary issue with the blockchain network.';
-          }
-          
-          // Final status update - all done
-          await this.bot.editMessageText(
-            `🔄 *Processing your request*\n\nStatus: Wallet created ✅\nStatus: Tokens sent ✅\nStatus: ${delegationStatus}`,
-            { 
-              chat_id: chatId, 
-              message_id: statusMsg.message_id,
-              parse_mode: 'Markdown'
-            }
-          );
-          
-          // Format token amount with commas
-          const formattedAmount = Number(result.amount).toLocaleString();
-          
-          // Determine token visual based on amount
-          let tokenVisual = '';
-          const tokenAmount = parseFloat(result.amount);
-          
-          if (tokenAmount < 100) {
-            tokenVisual = '🥉'; // Bronze for small balance
-          } else if (tokenAmount < 1000) {
-            tokenVisual = '🥈'; // Silver for medium balance
-          } else if (tokenAmount < 10000) {
-            tokenVisual = '🥇'; // Gold for large balance
-          } else {
-            tokenVisual = '👑'; // Crown for very large balance
-          }
-          
-          const groupLink = process.env.DAO_GROUP_LINK;
-
-          // Customize message based on admin status
-          let welcomeMessage;
-          if (result.isAdmin) {
-            welcomeMessage = `${tokenVisual} *Welcome to the DAO, Admin!* 🎉\n\nYour wallet has been created and *${formattedAmount} admin tokens* have been sent to your address.\n\nJoin us on our private channel to keep you updated: [Join DAO Group](${groupLink})\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals and create new ones right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
-          } else {
-            welcomeMessage = `${tokenVisual} *Welcome to the DAO!* 🎉\n\nYour wallet has been created and *${formattedAmount} tokens* have been sent to your address.\n\nJoin us on our private channel to keep you updated: [Join DAO Group](${groupLink})\n\nWallet address: \`${address}\`\n\n[View Wallet on Block Explorer](${explorerUrl})\n[View Token Transaction](${txExplorerUrl})\n\nYour tokens ${result.delegationSuccess ? 'are' : 'should be'} delegated, so you can vote on proposals right away! Keep your PIN secure - you'll need it for DAO actions.${delegationNote}`;
-          }
-          
-          this.bot.sendMessage(
-            chatId,
-            welcomeMessage,
-            { parse_mode: 'Markdown' }
-          );
-          
-          // Notify community group if configured
-          if (this.communityGroupId) {
-            const usernameDisplay = username 
-              ? `@${username}` 
-              : msg.from.first_name 
-                ? `${msg.from.first_name}${msg.from.last_name ? ' ' + msg.from.last_name : ''}` 
-                : 'A new member';
-                
-            const roleMessage = result.isAdmin ? ' as an admin' : '';
-            
-            try {
-              await this.bot.sendMessage(
-              this.communityGroupId,
-                `🌟 *New Member Alert!*\n\n${tokenVisual} ${usernameDisplay} has joined Alphin DAO${roleMessage}!\n\n💰 *${formattedAmount} tokens* have been granted\n\nThey can now participate in proposals and voting.\n\n*Let's give them a warm welcome!* 👋`,
-                { parse_mode: 'Markdown' }
-              );
-            } catch (groupError) {
-              console.log(`Failed to send message to community group: ${groupError.message}`);
-              
-              // If the error is about supergroup, try to use the new chat ID
-              if (groupError.message.includes('supergroup chat')) {
-                try {
-                  // Try to handle the supergroup migration
-                  const migrationInfo = groupError.response?.parameters;
-                  if (migrationInfo && migrationInfo.migrate_to_chat_id) {
-                    console.log(`Group migrated to supergroup with ID: ${migrationInfo.migrate_to_chat_id}`);
-                    await this.bot.sendMessage(
-                      migrationInfo.migrate_to_chat_id,
-                      `🌟 *New Member Alert!*\n\n${tokenVisual} ${usernameDisplay} has joined Alphin DAO${roleMessage}!\n\n💰 *${formattedAmount} tokens* have been granted\n\nThey can now participate in proposals and voting.\n\n*Let's give them a warm welcome!* 👋`,
-                      { parse_mode: 'Markdown' }
-                    );
-                  }
-                } catch (innerError) {
-                  console.log(`Failed to send message to supergroup: ${innerError.message}`);
-                }
-              }
-              
-              // No need to throw error here, the user has already joined successfully
-            }
-          }
-        } catch (error) {
-          console.error('Error in join process:', error);
-          this.bot.sendMessage(chatId, `Error joining the DAO: ${error.message}`);
-        }
-      });
-      
-      // Save message ID to delete it later (for security)
-      const state = this.textProcessor.getConversationState(userId);
-      state.messageToDelete = message.message_id;
-      this.textProcessor.setConversationState(userId, state);
-      
-    } catch (error) {
-      console.error('Error in join process:', error);
-      this.bot.sendMessage(chatId, `Error joining the DAO: ${error.message}`);
-    }
+    // Call the extracted function with the necessary dependencies
+    return handleJoinDAO({
+      bot: this.bot,
+      wallets: this.wallets,
+      blockchain: this.blockchain,
+      textProcessor: this.textProcessor,
+      communityGroupId: this.communityGroupId,
+      getExplorerUrl: this.getExplorerUrl.bind(this)
+    }, msg);
   }
-  
+
+
   /**
    * Handle /proposal command
    * @param {Object} msg - Telegram message object
